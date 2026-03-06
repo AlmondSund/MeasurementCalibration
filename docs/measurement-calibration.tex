@@ -1,0 +1,107 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath}
+\usepackage{microtype}
+\setlength{\emergencystretch}{3em}
+
+\begin{document}
+
+\subsection{Theoretical Estimation Model}
+
+Let $x_i(t)$ denote the true input signal at the reference plane of sensor $i$, and let $y_i(t)$ denote the measured output of the sensing chain. The sensor is modeled as a linear time-invariant (LTI) system with impulse response $h_i(t)$ and frequency response
+\[
+H_i(\omega) = \mathcal{F}\{h_i(t)\}.
+\]
+The measurement model is therefore
+\[
+y_i(t) = (h_i * x_i)(t) + n_i(t),
+\]
+where $n_i(t)$ represents the additive internal noise of the sensor.
+
+In the frequency domain, the model becomes
+\[
+Y_i(\omega) = H_i(\omega) X_i(\omega) + N_i(\omega).
+\]
+
+Assuming that the input signal $x_i(t)$ and the internal noise $n_i(t)$ are uncorrelated wide-sense stationary processes, the output power spectral density (PSD) satisfies
+\[
+\Phi_{y_i}(\omega) = |H_i(\omega)|^2 \Phi_{x_i}(\omega) + \Phi_{n_i}(\omega),
+\]
+where $\Phi_{x_i}(\omega)$ is the true input PSD, $\Phi_{y_i}(\omega)$ is the measured PSD, and $\Phi_{n_i}(\omega)$ is the internal noise PSD.
+
+The objective is to estimate the true input PSD $\Phi_{x_i}(\omega)$ from the measured PSD. If the sensor transfer function is known and the internal noise PSD is either known or negligible, the calibrated estimator is given by
+\[
+\widehat{\Phi}_{x_i}(\omega)
+=
+\frac{\widehat{\Phi}_{y_i}(\omega)-\widehat{\Phi}_{n_i}(\omega)}
+{|H_i(\omega)|^2}.
+\]
+
+If the internal noise is negligible compared to the signal power, this expression simplifies to
+\[
+\widehat{\Phi}_{x_i}(\omega)
+\approx
+\frac{\widehat{\Phi}_{y_i}(\omega)}
+{|H_i(\omega)|^2}.
+\]
+
+In practice, the sensor calibration is available in decibels through a frequency-dependent error curve $E_i(\omega)$, defined as
+\[
+E_i(\omega) = 10 \log_{10} |H_i(\omega)|^2.
+\]
+Therefore,
+\[
+|H_i(\omega)|^2 = 10^{E_i(\omega)/10}.
+\]
+
+Substituting this relation into the estimator yields
+\[
+\widehat{\Phi}_{x_i}(\omega)
+=
+\frac{\widehat{\Phi}_{y_i}(\omega)-\widehat{\Phi}_{n_i}(\omega)}
+{10^{E_i(\omega)/10}}.
+\]
+
+When the noise contribution is negligible, the estimator reduces to
+\[
+\widehat{\Phi}_{x_i}(\omega)
+=
+\widehat{\Phi}_{y_i}(\omega)\,10^{-E_i(\omega)/10}.
+\]
+
+If the PSD is expressed in decibels,
+\[
+S_{y_i}(\omega)=10\log_{10}\widehat{\Phi}_{y_i}(\omega),
+\qquad
+S_{x_i}(\omega)=10\log_{10}\widehat{\Phi}_{x_i}(\omega),
+\]
+then, in the negligible-noise regime, the corrected PSD is simply
+\[
+\widehat{S}_{x_i}(\omega)=S_{y_i}(\omega)-E_i(\omega).
+\]
+
+If the internal noise is not negligible, the correction must be performed in linear power units before converting back to decibels. In that case,
+\[
+\widehat{S}_{x_i}(\omega)
+=
+10\log_{10}
+\left(
+10^{S_{y_i}(\omega)/10}
+-
+10^{S_{n_i}(\omega)/10}
+\right)
+-
+E_i(\omega),
+\]
+where $S_{n_i}(\omega)=10\log_{10}\widehat{\Phi}_{n_i}(\omega)$.
+
+This model shows that the estimation problem is no longer based on relative alignment between sensors, but rather on the inversion of each sensor's known frequency response. Consequently, each sensor can be calibrated independently, even when different sensors observe different spectral environments, provided that the corresponding transfer function remains valid under the operating conditions of the measurement.
+
+The validity of this estimator relies on the following assumptions: (i) the sensing chain can be approximated as LTI during the measurement interval, (ii) the calibration curve $E_i(\omega)$ is consistent with the actual hardware configuration, (iii) the PSD definition is consistent between calibration and measurement, including bandwidth and spectral scaling conventions, and (iv) the sensor operates within its linear regime, without saturation or strong nonlinear distortion.
+
+\end{document}
+
+\end{document}
+
+\end{document}
