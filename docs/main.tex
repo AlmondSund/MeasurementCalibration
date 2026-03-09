@@ -4,275 +4,808 @@
 \usepackage[english]{babel}
 \usepackage{lmodern}
 \usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
 \usepackage{microtype}
 \setlength{\emergencystretch}{4em}
 
 \begin{document}
 
-\setlength{\emergencystretch}{4em}
+\section{Implemented spectral calibration model}
 
-\section{Theoretical framework for spectral calibration in a sensor network}
+\subsection{Indices, data, and preprocessing}
+
+Let $s\in\{1,\dots,M\}$ index sensors, let $k\in\{1,\dots,K\}$ index aligned calibration experiments, and let $j\in\{1,\dots,J\}$ index the discrete frequency bins of the common calibration band. After preprocessing, the calibration data are represented by an observation tensor
+\[
+Y_{s,k,j}>0,
+\qquad
+(s,k,j)\in\{1,\dots,M\}\times\{1,\dots,K\}\times\{1,\dots,J\},
+\]
+in linear power units.
+
+The implemented preprocessing stage does the following.
+
+\begin{enumerate}
+    \item It parses one acquisition CSV per sensor and extracts the PSD vectors.
+    \item It selects the frequency band shared by all sensors.
+    \item It aligns the experiment sequences by searching a small integer shift for each sensor relative to a designated reference sensor.
+    \item It constructs a uniform frequency grid from the selected common band.
+    \item It interpolates each sensor's nominal response CSV onto that grid.
+    \item It normalizes the nominal gains so that their geometric mean is one at each frequency.
+\end{enumerate}
+
+Denote the resulting nominal gain by $G^{(0)}_{s,j}>0$. The normalization is
+\begin{equation}
+\bar G^{(0)}_j
+=
+\exp\!\left(
+\frac{1}{M}\sum_{s=1}^{M}\log G^{(0)}_{s,j}
+\right),
+\qquad
+G^{(0)}_{s,j}\leftarrow \frac{G^{(0)}_{s,j}}{\bar G^{(0)}_j}.
+\label{eq:nominal-normalization}
+\end{equation}
+
+Because the loader constructs equally spaced frequency centers on the retained band, the second-difference smoothers used later act on a uniform grid.
 
 \subsection{Observation model}
 
-Let $\mathcal{F}=\{f_1,\dots,f_J\}$ denote the discrete frequency grid, let $s\in\{1,\dots,M\}$ index the sensors, with $M=10$, and let $k\in\{1,\dots,K\}$ index the calibration experiments carried out under common observation conditions. For each experiment $k$ and frequency $f\in\mathcal{F}$, all sensors are assumed to observe the same latent power spectral density (PSD), denoted by $S_k(f)\ge 0$.
-
-The measurement delivered by sensor $s$ at frequency $f$ in experiment $k$ is modeled, in linear power scale, as
+The fitted calibration model is
 \begin{equation}
-Y_{s,k}(f)=G_s(f)\,S_k(f)+N_s(f)+\varepsilon_{s,k}(f),
+Y_{s,k,j}
+=
+G_{s,j}\,S_{k,j}
++
+N_{s,j}
++
+\varepsilon_{s,k,j},
 \label{eq:model}
 \end{equation}
 where:
 \begin{itemize}
-    \item $Y_{s,k}(f)\ge 0$ is the observed PSD;
-    \item $G_s(f)>0$ is the multiplicative frequency response of sensor $s$;
-    \item $N_s(f)\ge 0$ is the additive internal noise floor of sensor $s$;
-    \item $\varepsilon_{s,k}(f)$ is a zero-mean residual term.
+    \item $S_{k,j}\ge 0$ is the latent common spectrum at experiment $k$ and bin $j$;
+    \item $G_{s,j}>0$ is the multiplicative gain of sensor $s$;
+    \item $N_{s,j}>0$ is the additive sensor floor;
+    \item $\varepsilon_{s,k,j}$ is a residual term.
 \end{itemize}
 
-A natural working assumption is
+Conditionally on the current latent spectra, the working likelihood is Gaussian:
 \begin{equation}
-\varepsilon_{s,k}(f)\mid S_k(f)\sim \mathcal{N}\!\left(0,\sigma_s^2(f)\right),
-\label{eq:gaussian_noise}
+\varepsilon_{s,k,j}\mid S_{k,j}\sim \mathcal N(0,\sigma^2_{s,j}),
+\label{eq:gaussian}
 \end{equation}
-independently across $k$, conditionally on the latent spectra, where $\sigma_s^2(f)$ is sensor- and frequency-dependent. The Gaussian assumption is not essential, but it yields a tractable estimation framework and can be replaced by a robust likelihood if required.
+with sensor- and frequency-dependent residual variance $\sigma^2_{s,j}>0$.
 
-\subsection{Structural assumptions}
+\subsection{Reparameterization used by the implementation}
 
-The calibration problem is formulated under the following assumptions:
+The code does not optimize directly in $(G_{s,j},N_{s,j})$. Instead it uses the parameterization
+\begin{equation}
+G_{s,j}
+=
+G^{(0)}_{s,j}\exp(\gamma_{s,j}),
+\label{eq:gain-reparam}
+\end{equation}
+where $\gamma_{s,j}\in\mathbb R$ is the residual \emph{log-gain correction}, and
+\begin{equation}
+N_{s,j}
+=
+\phi(\eta_{s,j}),
+\qquad
+\phi(\eta)=\log(1+e^\eta),
+\label{eq:noise-reparam}
+\end{equation}
+where $\eta_{s,j}\in\mathbb R$ is an unconstrained \emph{noise parameter}. Thus positivity of the additive floor is enforced by the softplus map \eqref{eq:noise-reparam}, not by post-hoc clipping.
 
-\begin{enumerate}
-    \item[(A1)] \textbf{Common latent spectrum during calibration.} For each calibration experiment $k$, the quantity $S_k(f)$ is identical for all sensors $s$.
-    \item[(A2)] \textbf{Sensor-specific transfer characteristics.} The functions $G_s(f)$ and $N_s(f)$ depend only on the sensor and frequency, and are invariant across the calibration experiments.
-    \item[(A3)] \textbf{Spectral smoothness.} The functions $f\mapsto G_s(f)$ and $f\mapsto N_s(f)$ are sufficiently smooth on $\mathcal{F}$.
-    \item[(A4)] \textbf{Transferability.} The sensor-specific functions estimated from the calibration set remain valid during later deployment, even when the sensors no longer observe the same spectrum.
-\end{enumerate}
+The derivative of \eqref{eq:noise-reparam} is
+\begin{equation}
+\phi'(\eta)
+=
+\frac{1}{1+e^{-\eta}},
+\label{eq:sigmoid}
+\end{equation}
+which is used in the Gauss--Newton linearization.
 
 \subsection{Identifiability}
 
-Model \eqref{eq:model} is not identifiable without an additional normalization constraint. Indeed, for any strictly positive function $c(f)$,
+The model is invariant under
 \[
-G_s(f)\mapsto c(f)\,G_s(f),
+G_{s,j}\mapsto c_j G_{s,j},
 \qquad
-S_k(f)\mapsto c(f)^{-1}S_k(f),
+S_{k,j}\mapsto c_j^{-1}S_{k,j},
+\qquad c_j>0,
 \]
-leaves \eqref{eq:model} invariant. Hence, the parameterization is defined only up to a frequency-dependent scale factor.
+so it is identifiable only up to a frequency-wise multiplicative scale.
 
-To remove this indeterminacy, impose for each $f\in\mathcal{F}$ the normalization
+The implementation resolves this by projecting the residual log-gains to zero mean across sensors:
 \begin{equation}
-\frac{1}{M}\sum_{s=1}^{M}\log G_s(f)=0,
+\frac{1}{M}\sum_{s=1}^{M}\gamma_{s,j}=0,
+\qquad j=1,\dots,J.
 \label{eq:ident}
 \end{equation}
-which is equivalent to requiring that the geometric mean of $\{G_s(f)\}_{s=1}^M$ equals one.
-
-Under \eqref{eq:ident}, the latent spectrum $S_k(f)$ is interpreted as the common PSD expressed on the network reference scale.
-
-\subsection{Prior information on the most reliable sensor}
-
-Suppose that prior engineering knowledge indicates that Sensor $7$ is the most reliable instrument in the network, but not a perfect reference. This information should not be imposed as a hard constraint $G_7(f)\equiv 1$, since that would artificially transfer all model mismatch to the remaining sensors. Instead, it is introduced through a soft regularization:
+Equivalently,
 \begin{equation}
-\log G_7(f)\sim \mathcal{N}(0,\tau_7^2),
-\qquad
-0<\tau_7^2\ll 1,
-\label{eq:soft_anchor}
-\end{equation}
-together with the prior expectation that
-\begin{equation}
-\sigma_7^2(f)\le \sigma_s^2(f),
-\qquad s\neq 7,
-\label{eq:variance_prior}
-\end{equation}
-in an average or regularized sense. This construction gives Sensor $7$ greater inferential influence while preserving model flexibility.
-
-\subsection{Penalized likelihood formulation}
-
-Define the full parameter set
-\[
-\Theta=
-\left\{
-G_s(f),\,N_s(f),\,\sigma_s^2(f)
-\right\}_{s=1,\dots,M;\,f\in\mathcal{F}}
-\cup
-\left\{
-S_k(f)
-\right\}_{k=1,\dots,K;\,f\in\mathcal{F}}.
-\]
-
-Under \eqref{eq:gaussian_noise}, the negative log-likelihood, up to an additive constant, is
-\begin{equation}
-\mathcal{L}(\Theta)
+\frac{1}{M}\sum_{s=1}^{M}\log G_{s,j}
 =
-\frac{1}{2}
-\sum_{f\in\mathcal{F}}
-\sum_{k=1}^{K}
-\sum_{s=1}^{M}
-\left[
-\log \sigma_s^2(f)
+\frac{1}{M}\sum_{s=1}^{M}\log G^{(0)}_{s,j}
 +
-\frac{\bigl(Y_{s,k}(f)-G_s(f)S_k(f)-N_s(f)\bigr)^2}{\sigma_s^2(f)}
-\right].
-\label{eq:nll}
-\end{equation}
-
-To enforce smoothness and incorporate prior information, consider the penalized objective
-\begin{equation}
-\mathcal{J}(\Theta)
+\frac{1}{M}\sum_{s=1}^{M}\gamma_{s,j}
 =
-\mathcal{L}(\Theta)
-+
-\lambda_G \mathcal{P}_G
-+
-\lambda_N \mathcal{P}_N
-+
-\lambda_7 \mathcal{P}_7,
-\label{eq:penalized_obj}
+0,
+\label{eq:ident-full}
 \end{equation}
-subject to the identifiability constraint \eqref{eq:ident}, where
+because the nominal gains have already been normalized by \eqref{eq:nominal-normalization}.
+
+Under \eqref{eq:ident}, the latent spectra $\{S_{k,j}\}$ live on the common network reference scale.
+
+\subsection{Reliable-sensor prior}
+
+Let $s_\star$ denote the sensor believed to be the most reliable one. The implementation does \emph{not} impose a hard reference constraint. Instead it uses two soft mechanisms:
+
+\begin{enumerate}
+    \item A quadratic anchor on the residual log-gain of the reliable sensor, favoring
+    \[
+    \gamma_{s_\star,j}\approx 0,
+    \]
+    meaning that the reliable sensor should stay close to its nominal curve.
+    \item An optional multiplicative boost of its inverse-variance weight in the latent-spectrum update.
+\end{enumerate}
+
+This keeps the reliable sensor influential without forcing all mismatch into the rest of the network.
+
+\subsection{Initialization}
+
+Let $\mathcal K_{\mathrm{train}}\subseteq\{1,\dots,K\}$ be the training experiments used for fitting. The implementation initializes:
 \begin{align}
-\mathcal{P}_G
-&=
-\sum_{s=1}^{M}\sum_{j=2}^{J-1}
-\left(
-\Delta^2 \log G_s(f_j)
-\right)^2,
-\label{eq:Pg}
+\gamma^{(0)}_{s,j} &= 0,
+\label{eq:init-gamma}
 \\
-\mathcal{P}_N
+G^{(0,\mathrm{fit})}_{s,j}
 &=
-\sum_{s=1}^{M}\sum_{j=2}^{J-1}
-\left(
-\Delta^2 N_s(f_j)
-\right)^2,
-\label{eq:Pn}
+G^{(0)}_{s,j},
+\label{eq:init-gain}
 \\
-\mathcal{P}_7
+N^{(0)}_{s,j}
 &=
-\sum_{j=1}^{J}
-\bigl(\log G_7(f_j)\bigr)^2.
-\label{eq:P7}
+0.1\,
+Q_{0.05}\!\left(\{Y_{s,k,j}:k\in\mathcal K_{\mathrm{train}}\}\right),
+\label{eq:init-noise}
+\\
+\eta^{(0)}_{s,j}
+&=
+\phi^{-1}(N^{(0)}_{s,j}),
+\label{eq:init-eta}
+\\
+S^{(0)}_{k,j}
+&=
+\operatorname{median}_{s}
+\left[
+\frac{Y_{s,k,j}-N^{(0)}_{s,j}}{G^{(0,\mathrm{fit})}_{s,j}}
+\right]_{+},
+\label{eq:init-latent}
 \end{align}
-Here $\Delta^2$ denotes the second-order finite-difference operator on the frequency grid. Penalties \eqref{eq:Pg}--\eqref{eq:Pn} prevent nonphysical oscillations in the estimated transfer characteristics.
+where $[\cdot]_+$ denotes clipping to a small positive floor for numerical stability.
 
-\subsection{Alternating estimation}
-
-Direct minimization of \eqref{eq:penalized_obj} is nonconvex jointly in $(G_s,S_k,N_s)$, but conditionally convex in several blocks. A natural approach is block-coordinate descent or an EM-type alternating scheme.
-
-\paragraph{Update of the latent spectrum.}
-Assuming $\{G_s(f),N_s(f),\sigma_s^2(f)\}$ fixed, for each $(k,f)$ the minimizer with respect to $S_k(f)$ is the weighted least-squares estimator
+The initial residual variance is
 \begin{equation}
-\widehat{S}_k(f)
+\sigma^{2(0)}_{s,j}
 =
+\max\!\left(
+\frac{1}{|\mathcal K_{\mathrm{train}}|}
+\sum_{k\in\mathcal K_{\mathrm{train}}}
+\bigl(
+Y_{s,k,j}-G^{(0,\mathrm{fit})}_{s,j}S^{(0)}_{k,j}-N^{(0)}_{s,j}
+\bigr)^2,
+\;
+\sigma^2_{\min}
+\right).
+\label{eq:init-variance}
+\end{equation}
+
+\subsection{Second-difference smoothers}
+
+Let $D_2\in\mathbb R^{(J-2)\times J}$ denote the second-difference operator
+\[
+(D_2 x)_r = x_r - 2x_{r+1} + x_{r+2},
+\qquad r=1,\dots,J-2.
+\]
+The implementation uses the corresponding Gram matrix
+\begin{equation}
+L = D_2^\top D_2.
+\label{eq:L}
+\end{equation}
+
+Crucially, the gain smoother acts on $\gamma_s=(\gamma_{s,1},\dots,\gamma_{s,J})^\top$, i.e. on \emph{log-gain correction}, and the noise smoother acts on $\eta_s=(\eta_{s,1},\dots,\eta_{s,J})^\top$, i.e. on the \emph{softplus preimage}, not directly on $N_s$.
+
+\subsection{Alternating estimation actually implemented}
+
+The estimator runs for a fixed number of alternating iterations $t=0,\dots,T-1$.
+
+\subsubsection*{Step 1: inverse-variance weights}
+
+At iteration $t$, define
+\begin{equation}
+w^{(t)}_{s,j}
+=
+\frac{1}{\max(\sigma^{2(t)}_{s,j},\sigma^2_{\min})}.
+\label{eq:base-weights}
+\end{equation}
+If a reliable-weight boost $\beta_{\mathrm{rel}}>0$ is used, then
+\begin{equation}
+w^{(t)}_{s_\star,j}
+\leftarrow
+\beta_{\mathrm{rel}}\,w^{(t)}_{s_\star,j}.
+\label{eq:reliable-boost}
+\end{equation}
+
+\subsubsection*{Step 2: latent-spectrum update}
+
+Given current gains and additive floors, the latent spectrum is updated by weighted least squares:
+\begin{equation}
+S^{(t+1)}_{k,j}
+=
+\left[
 \frac{
 \sum_{s=1}^{M}
-w_s(f)\,G_s(f)\,\bigl(Y_{s,k}(f)-N_s(f)\bigr)
+w^{(t)}_{s,j}\,
+G^{(t)}_{s,j}\,
+\bigl(Y_{s,k,j}-N^{(t)}_{s,j}\bigr)
 }{
 \sum_{s=1}^{M}
-w_s(f)\,G_s^2(f)
+w^{(t)}_{s,j}\,
+\bigl(G^{(t)}_{s,j}\bigr)^2
+}
+\right]_{+}.
+\label{eq:latent-update}
+\end{equation}
+
+\subsubsection*{Step 3: frequency-only low-information diagnostic}
+
+The implementation measures how much the latent spectrum varies across calibration experiments:
+\begin{equation}
+v^{(t+1)}_j
+=
+\operatorname{Var}_{k\in\mathcal K_{\mathrm{train}}}
+\bigl(S^{(t+1)}_{k,j}\bigr).
+\label{eq:latent-var}
+\end{equation}
+
+Let
+\[
+\mathcal J_+ = \{j : v^{(t+1)}_j > \varepsilon\}.
+\]
+If $\mathcal J_+=\varnothing$, then every frequency is declared low-information and
+\begin{equation}
+\omega^{\mathrm{freq}}_j = \omega_{\min},
+\qquad
+m^{\mathrm{freq}}_j = 1,
+\label{eq:freq-degenerate}
+\end{equation}
+for all $j$.
+
+Otherwise define the threshold
+\begin{equation}
+\tau_v
+=
+\max\!\left(
+\rho_v\,
+\operatorname{median}\{v^{(t+1)}_j : j\in\mathcal J_+\},
+\;
+\varepsilon
+\right),
+\label{eq:var-threshold}
+\end{equation}
+where $\rho_v>0$ is the configured threshold ratio. Then
+\begin{equation}
+\omega^{\mathrm{freq}}_j
+=
+\operatorname{clip}
+\left(
+\frac{v^{(t+1)}_j}{\tau_v},
+\;
+\omega_{\min},
+\;
+1
+\right),
+\qquad
+m^{\mathrm{freq}}_j
+=
+\mathbf 1\{v^{(t+1)}_j<\tau_v\}.
+\label{eq:freq-weight}
+\end{equation}
+
+\subsubsection*{Step 4: sensor-specific information weights}
+
+The frequency-only diagnostic is then refined into a sensor-specific information weight. Let
+\begin{equation}
+\bar S^{(t+1)}_j
+=
+\frac{1}{|\mathcal K_{\mathrm{train}}|}
+\sum_{k\in\mathcal K_{\mathrm{train}}}
+S^{(t+1)}_{k,j}.
+\label{eq:latent-mean}
+\end{equation}
+
+Define the centered signal energy
+\begin{equation}
+E^{\mathrm{sig}}_{s,j}
+=
+\bigl(G^{(t)}_{s,j}\bigr)^2
+\sum_{k\in\mathcal K_{\mathrm{train}}}
+\bigl(S^{(t+1)}_{k,j}-\bar S^{(t+1)}_j\bigr)^2,
+\label{eq:centered-energy}
+\end{equation}
+and the intercept-sensitive noise energy
+\begin{equation}
+E^{\mathrm{int}}_{s,j}
+=
+|\mathcal K_{\mathrm{train}}|\,
+\bigl(\phi'(\eta^{(t)}_{s,j})\bigr)^2.
+\label{eq:intercept-energy}
+\end{equation}
+
+The local design-balance score is
+\begin{equation}
+d_{s,j}
+=
+\frac{
+\min\{E^{\mathrm{sig}}_{s,j},E^{\mathrm{int}}_{s,j}\}
+}{
+\max\{E^{\mathrm{sig}}_{s,j},E^{\mathrm{int}}_{s,j}\}+\varepsilon
+}.
+\label{eq:design-balance}
+\end{equation}
+
+The local residual-SNR score is
+\begin{equation}
+q_{s,j}
+=
+\frac{
+\bigl(G^{(t)}_{s,j}\bigr)^2 v^{(t+1)}_j
+}{
+\bigl(G^{(t)}_{s,j}\bigr)^2 v^{(t+1)}_j + \sigma^{2(t)}_{s,j} + \varepsilon
+}.
+\label{eq:residual-snr}
+\end{equation}
+
+These are normalized by robust positive-entry medians:
+\begin{align}
+\tau_d
+&=
+\max\!\left(
+\operatorname{median}\{d_{s,j}:d_{s,j}>0\},
+\varepsilon
+\right),
+\label{eq:tau-d}
+\\
+\tau_q
+&=
+\max\!\left(
+\operatorname{median}\{q_{s,j}:q_{s,j}>0\},
+\varepsilon
+\right),
+\label{eq:tau-q}
+\\
+\widetilde d_{s,j}
+&=
+\operatorname{clip}\!\left(\frac{d_{s,j}}{\tau_d},0,1\right),
+\label{eq:d-norm}
+\\
+\widetilde q_{s,j}
+&=
+\operatorname{clip}\!\left(\frac{q_{s,j}}{\tau_q},0,1\right).
+\label{eq:q-norm}
+\end{align}
+
+The final sensor-specific information weight is
+\begin{equation}
+\omega_{s,j}
+=
+\operatorname{clip}
+\bigl(
+\omega^{\mathrm{freq}}_j\,
+\widetilde d_{s,j}\,
+\widetilde q_{s,j},
+\;
+\omega_{\min},
+\;
+1
+\bigr).
+\label{eq:information-weight}
+\end{equation}
+
+The implementation also stores the conservative warning mask
+\begin{equation}
+m_{s,j}
+=
+m^{\mathrm{freq}}_j
+\;\vee\;
+\mathbf 1\!\left\{
+\omega_{s,j}\le \max(\omega_{\min},0.60)
+\right\}.
+\label{eq:low-info-mask}
+\end{equation}
+
+\subsubsection*{Step 5: one joint sensor update by sparse Gauss--Newton}
+
+Fix a sensor $s$ and suppress the superscript $(t)$ for readability. Let
+\begin{align}
+g^{\mathrm{ref}}_j
+&=
+G^{(0)}_{s,j}\exp(\gamma_{s,j}),
+\label{eq:gref}
+\\
+n^{\mathrm{ref}}_j
+&=
+\phi(\eta_{s,j}),
+\label{eq:nref}
+\\
+h_j
+&=
+\phi'(\eta_{s,j}),
+\label{eq:href}
+\\
+x_{k,j}
+&=
+g^{\mathrm{ref}}_j\,S_{k,j}.
+\label{eq:xkj}
+\end{align}
+
+The nonlinear model is linearized around the current iterate:
+\begin{equation}
+Y_{s,k,j}
+\approx
+x_{k,j}
++
+n^{\mathrm{ref}}_j
++
+x_{k,j}\,\delta\gamma_j
++
+h_j\,\delta\eta_j.
+\label{eq:linearization}
+\end{equation}
+
+The effective data weight for that sensor and frequency is
+\begin{equation}
+\widetilde w_{s,j}
+=
+w_{s,j}\,\omega_{s,j}.
+\label{eq:effective-weight}
+\end{equation}
+
+Let $\delta\gamma,\delta\eta\in\mathbb R^J$ collect the per-frequency increments. Define
+\begin{align}
+D^\gamma_s
+&=
+\operatorname{diag}\!\left(
+\widetilde w_{s,j}\sum_{k}x_{k,j}^2
+\right)_{j=1}^{J},
+\label{eq:Dgamma}
+\\
+D^\eta_s
+&=
+\operatorname{diag}\!\left(
+\widetilde w_{s,j}\,|\mathcal K_{\mathrm{train}}|\,h_j^2
+\right)_{j=1}^{J},
+\label{eq:Deta}
+\\
+C_s
+&=
+\operatorname{diag}\!\left(
+\widetilde w_{s,j}\,h_j\sum_{k}x_{k,j}
+\right)_{j=1}^{J},
+\label{eq:Cs}
+\\
+b^\gamma_{s,j}
+&=
+\widetilde w_{s,j}\sum_{k}
+x_{k,j}
+\bigl(
+Y_{s,k,j}-x_{k,j}-n^{\mathrm{ref}}_j
+\bigr),
+\label{eq:bgamma}
+\\
+b^\eta_{s,j}
+&=
+\widetilde w_{s,j}\,h_j\sum_{k}
+\bigl(
+Y_{s,k,j}-x_{k,j}-n^{\mathrm{ref}}_j
+\bigr).
+\label{eq:beta}
+\end{align}
+
+Let $\lambda_{G,\mathrm{ref}}$ and $\lambda_{N,\mathrm{ref}}$ be the conservative reference penalties. Normally the reference targets are the current iterates:
+\[
+\gamma^{\mathrm{tar}}_s=\gamma_s,
+\qquad
+\eta^{\mathrm{tar}}_s=\eta_s.
+\]
+For the reliable sensor $s_\star$, the gain target is blended with zero:
+\begin{equation}
+\gamma^{\mathrm{tar}}_{s_\star}
+=
+\frac{
+\lambda_{G,\mathrm{ref}}\gamma_{s_\star}
++
+\lambda_{\mathrm{rel}}\,0
+}{
+\lambda_{G,\mathrm{ref}}+\lambda_{\mathrm{rel}}
 },
 \qquad
-w_s(f)=\sigma_s^{-2}(f).
-\label{eq:Sk_update}
+\lambda^{(\star)}_{G,\mathrm{ref}}
+=
+\lambda_{G,\mathrm{ref}}+\lambda_{\mathrm{rel}}.
+\label{eq:reliable-target}
+\end{equation}
+For $s\neq s_\star$, one simply has $\lambda^{(s)}_{G,\mathrm{ref}}=\lambda_{G,\mathrm{ref}}$.
+
+The update solves the sparse block system
+\begin{equation}
+\resizebox{\textwidth}{!}{$
+\begin{bmatrix}
+D^\gamma_s + \lambda_{G,\mathrm{smooth}}L + \lambda^{(s)}_{G,\mathrm{ref}}I
+&
+C_s
+\\[0.5em]
+C_s
+&
+D^\eta_s + \lambda_{N,\mathrm{smooth}}L + \lambda_{N,\mathrm{ref}}I
+\end{bmatrix}
+\begin{bmatrix}
+\delta\gamma_s\\[0.25em]
+\delta\eta_s
+\end{bmatrix}
+=
+\begin{bmatrix}
+b^\gamma_s
+-
+\lambda_{G,\mathrm{smooth}}L\gamma_s
++
+\lambda^{(s)}_{G,\mathrm{ref}}(\gamma^{\mathrm{tar}}_s-\gamma_s)
+\\[0.5em]
+b^\eta_s
+-
+\lambda_{N,\mathrm{smooth}}L\eta_s
++
+\lambda_{N,\mathrm{ref}}(\eta^{\mathrm{tar}}_s-\eta_s)
+\end{bmatrix}.
+$}
+\label{eq:block-system}
 \end{equation}
 
-\paragraph{Update of sensor-specific parameters.}
-Fixing $\{S_k(f)\}$, each pair $\{G_s(f),N_s(f)\}$ is obtained by solving
+The raw update is then
 \begin{equation}
-\min_{G_s(f)>0,\;N_s(f)\ge 0}
-\sum_{k=1}^{K}
+\gamma^{\mathrm{raw}}_s=\gamma_s+\delta\gamma_s,
+\qquad
+\eta^{\mathrm{raw}}_s=\eta_s+\delta\eta_s.
+\label{eq:raw-update}
+\end{equation}
+
+If a correction cap $c_{\max}>0$ dB is configured, the corresponding log-gain bound is
+\begin{equation}
+\gamma_{\max}
+=
+\log\!\left(10^{c_{\max}/10}\right),
+\label{eq:gamma-max}
+\end{equation}
+and each raw gain correction is clipped to
+\begin{equation}
+-\gamma_{\max}\le \gamma^{\mathrm{raw}}_{s,j}\le \gamma_{\max}.
+\label{eq:raw-clip}
+\end{equation}
+
+\subsubsection*{Step 6: projection onto the identifiability constraint}
+
+The sensor updates are computed independently, so their raw log-gain corrections generally do not satisfy \eqref{eq:ident}. The implementation therefore projects them frequency-by-frequency.
+
+If no cap is active, then the projection is simply
+\begin{equation}
+\gamma^{(t+1)}_{s,j}
+=
+\gamma^{\mathrm{raw}}_{s,j}
+-
+\frac{1}{M}\sum_{u=1}^{M}\gamma^{\mathrm{raw}}_{u,j}.
+\label{eq:projection-no-cap}
+\end{equation}
+
+If the cap is active, then for each $j$ the code finds a scalar offset $\alpha_j$ by bisection such that
+\begin{equation}
+\frac{1}{M}\sum_{s=1}^{M}
+\operatorname{clip}
+\bigl(
+\gamma^{\mathrm{raw}}_{s,j}-\alpha_j,
+-\gamma_{\max},
+\gamma_{\max}
+\bigr)
+=
+0,
+\label{eq:projection-cap}
+\end{equation}
+and sets
+\begin{equation}
+\gamma^{(t+1)}_{s,j}
+=
+\operatorname{clip}
+\bigl(
+\gamma^{\mathrm{raw}}_{s,j}-\alpha_j,
+-\gamma_{\max},
+\gamma_{\max}
+\bigr).
+\label{eq:projection-cap-result}
+\end{equation}
+
+The frequency-wise common log shift removed by this projection is
+\begin{equation}
+\Delta_j
+=
+\frac{1}{M}\sum_{s=1}^{M}
+\bigl(
+\gamma^{\mathrm{raw}}_{s,j}-\gamma^{(t+1)}_{s,j}
+\bigr),
+\label{eq:common-shift}
+\end{equation}
+and is transferred into the latent spectra:
+\begin{equation}
+S^{(t+1)}_{k,j}
+\leftarrow
+S^{(t+1)}_{k,j}\exp(\Delta_j).
+\label{eq:latent-rescale}
+\end{equation}
+
+Finally,
+\begin{align}
+G^{(t+1)}_{s,j}
+&=
+G^{(0)}_{s,j}\exp(\gamma^{(t+1)}_{s,j}),
+\label{eq:g-update}
+\\
+N^{(t+1)}_{s,j}
+&=
+\phi(\eta^{\mathrm{raw}}_{s,j}).
+\label{eq:n-update}
+\end{align}
+
+\subsubsection*{Step 7: residual-variance update}
+
+With the new parameters,
+\begin{equation}
+r^{(t+1)}_{s,k,j}
+=
+Y_{s,k,j}
+-
+G^{(t+1)}_{s,j}S^{(t+1)}_{k,j}
+-
+N^{(t+1)}_{s,j},
+\label{eq:residual}
+\end{equation}
+and
+\begin{equation}
+\sigma^{2(t+1)}_{s,j}
+=
+\max\!\left(
+\frac{1}{|\mathcal K_{\mathrm{train}}|}
+\sum_{k\in\mathcal K_{\mathrm{train}}}
+\bigl(r^{(t+1)}_{s,k,j}\bigr)^2,
+\;
+\sigma^2_{\min}
+\right).
+\label{eq:variance-update}
+\end{equation}
+
+\subsection{Monitored objective}
+
+The implementation stores, after each iteration, the diagnostic quantity
+\begin{align}
+\mathcal J_{\mathrm{diag}}
+&=
+\frac{1}{2}
+\sum_{s=1}^{M}
+\sum_{j=1}^{J}
+\sum_{k\in\mathcal K_{\mathrm{train}}}
+\left[
+\log \sigma^2_{s,j}
++
+\frac{r_{s,k,j}^2}{\sigma^2_{s,j}}
+\right]
+\nonumber\\
+&\quad
++
+\lambda_{G,\mathrm{smooth}}
+\sum_{s=1}^{M}\|D_2\gamma_s\|_2^2
++
+\lambda_{N,\mathrm{smooth}}
+\sum_{s=1}^{M}\|D_2\eta_s\|_2^2
++
+\lambda_{\mathrm{rel}}\|\gamma_{s_\star}\|_2^2.
+\label{eq:diagnostic-objective}
+\end{align}
+
+This is the quantity recorded in \texttt{objective\_history}. It is a useful convergence diagnostic, but it is \emph{not} the full time-varying function minimized by every inner linear solve, because the actual update equations also include iteration-dependent conservative reference terms and information weights.
+
+\subsection{Deployment-time calibration map}
+
+For any new sensor-first tensor of observations $Y^{\mathrm{new}}_{s,\cdots,j}$, the deployed calibration map is
+\begin{equation}
+\widehat S^{\mathrm{new}}_{s,\cdots,j}
+=
 \frac{
-\bigl(Y_{s,k}(f)-G_s(f)S_k(f)-N_s(f)\bigr)^2
+Y^{\mathrm{new}}_{s,\cdots,j}-N_{s,j}
 }{
-\sigma_s^2(f)
-},
-\label{eq:sensor_regression}
-\end{equation}
-possibly coupled across frequencies through the smoothness penalties \eqref{eq:Pg}--\eqref{eq:Pn}.
-
-\paragraph{Update of residual variances.}
-Given current estimates $\widehat{G}_s(f)$, $\widehat{N}_s(f)$ and $\widehat{S}_k(f)$, define residuals
-\begin{equation}
-\widehat{r}_{s,k}(f)
-=
-Y_{s,k}(f)-\widehat{G}_s(f)\widehat{S}_k(f)-\widehat{N}_s(f),
-\label{eq:residuals}
-\end{equation}
-and estimate
-\begin{equation}
-\widehat{\sigma}_s^2(f)
-=
-\frac{1}{K}
-\sum_{k=1}^{K}
-\widehat{r}_{s,k}^2(f),
-\label{eq:sigma_update}
-\end{equation}
-or replace \eqref{eq:sigma_update} by a robust scale estimator if outliers are expected.
-
-\subsection{Interpretation of the calibrated sensor model}
-
-Once $\widehat{G}_s(f)$ and $\widehat{N}_s(f)$ are available, any future measurement $Y^{\mathrm{new}}_s(f)$ obtained by sensor $s$ can be mapped to the common reference scale through
-\begin{equation}
-\widehat{S}^{\,\mathrm{new}}_s(f)
-=
-\frac{
-Y^{\mathrm{new}}_s(f)-\widehat{N}_s(f)
-}{
-\widehat{G}_s(f)
+G_{s,j}
 }.
-\label{eq:deployed_calibration}
+\label{eq:deploy}
 \end{equation}
-If physical nonnegativity must be enforced explicitly, one may use
+If nonnegativity is enforced, the implementation uses
 \begin{equation}
-\widehat{S}^{\,\mathrm{new}}_s(f)
+\widehat S^{\mathrm{new}}_{s,\cdots,j}
 =
-\max\left\{
+\max\!\left\{
 0,\,
 \frac{
-Y^{\mathrm{new}}_s(f)-\widehat{N}_s(f)
+Y^{\mathrm{new}}_{s,\cdots,j}-N_{s,j}
 }{
-\widehat{G}_s(f)
+G_{s,j}
 }
 \right\}.
-\label{eq:truncated_calibration}
+\label{eq:deploy-nonnegative}
 \end{equation}
 
-Equation \eqref{eq:deployed_calibration} is the central transfer result of the calibration stage: the mapping is sensor-specific but experiment-independent. Therefore, after calibration, each sensor can provide a PSD estimate on the common network scale even when deployed at a different location and observing a different underlying spectrum.
+The code broadcasts the curves $(G_{s,j},N_{s,j})$ across any intermediate deployment dimensions while keeping the first axis as sensor and the last axis as frequency.
 
-\subsection{Consensus estimator under common-field operation}
+\subsection{Consensus estimator}
 
-If, at some later stage, a subset or all sensors again observe the same latent spectrum, then the corrected PSDs can be fused into a consensus estimator. Given calibrated measurements $\widehat{S}_s(f)$ and reliability weights $\widehat{w}_s(f)=\widehat{\sigma}_s^{-2}(f)$, define
+If several calibrated sensors later observe the same latent spectrum again, the implementation forms the inverse-variance consensus
 \begin{equation}
-\widehat{S}_{\mathrm{net}}(f)
+\widehat S^{\mathrm{net}}_{k,j}
 =
 \frac{
-\sum_{s=1}^{M}\widehat{w}_s(f)\,\widehat{S}_s(f)
+\sum_{s=1}^{M}
+\sigma^{-2}_{s,j}\,
+\widehat S_{s,k,j}
 }{
-\sum_{s=1}^{M}\widehat{w}_s(f)
+\sum_{s=1}^{M}
+\sigma^{-2}_{s,j}
 }.
-\label{eq:network_consensus}
+\label{eq:consensus}
 \end{equation}
-This aggregation is meaningful only if the sensors are measuring the same physical spectrum. When the deployed sensors observe different local spectra, \eqref{eq:network_consensus} is generally not physically interpretable unless an additional spatial field model is introduced.
+This aggregation is meaningful only under a common-field assumption at deployment time.
 
-\subsection{Incorporation of nominal frequency-response curves}
+\subsection{Hold-out validation and returned diagnostics}
 
-Suppose that, for each sensor $s$, a nominal frequency-response curve $G_s^{(0)}(f)$ is available from laboratory characterization. Then the model can be reparameterized as
-\begin{equation}
-G_s(f)=G_s^{(0)}(f)\,\widetilde{G}_s(f),
-\label{eq:response_decomposition}
-\end{equation}
-where $\widetilde{G}_s(f)$ is an unknown residual correction close to unity. Substituting \eqref{eq:response_decomposition} into \eqref{eq:model} gives
-\begin{equation}
-Y_{s,k}(f)
+Validation is performed by splitting whole calibration experiments into training and test subsets,
+\[
+\mathcal K_{\mathrm{train}}\cup\mathcal K_{\mathrm{test}}
 =
-G_s^{(0)}(f)\,\widetilde{G}_s(f)\,S_k(f)+N_s(f)+\varepsilon_{s,k}(f).
-\label{eq:model_with_nominal}
-\end{equation}
-This formulation is preferable whenever nominal response measurements are available, since it separates known instrumental structure from residual in-situ calibration.
+\{1,\dots,K\},
+\qquad
+\mathcal K_{\mathrm{train}}\cap\mathcal K_{\mathrm{test}}=\varnothing,
+\]
+estimating the calibration on $\mathcal K_{\mathrm{train}}$, and checking whether the deployed correction \eqref{eq:deploy} reduces inter-sensor dispersion on $\mathcal K_{\mathrm{test}}$.
 
-\subsection{Validation principle}
-
-The model is intended to estimate sensor-specific effects rather than memorize the calibration dataset. Accordingly, validation should be performed by holding out entire calibration experiments. Let $\mathcal{K}_{\mathrm{train}}\cup\mathcal{K}_{\mathrm{test}}=\{1,\dots,K\}$ be a partition of the calibration conditions. Parameters are estimated using $\mathcal{K}_{\mathrm{train}}$, and predictive agreement across sensors is then assessed on $\mathcal{K}_{\mathrm{test}}$ after correction via \eqref{eq:deployed_calibration}. A successful calibration should reduce inter-sensor bias and residual dispersion on held-out common-field experiments.
+The fitted result stores, in addition to $(G,N,\sigma^2,S)$, the following diagnostics:
+\begin{itemize}
+    \item the residual correction gain $\exp(\gamma_{s,j})$;
+    \item the latent-variation curve $v_j$;
+    \item the frequency-only weights $\omega^{\mathrm{freq}}_j$ and mask $m^{\mathrm{freq}}_j$;
+    \item the sensor-specific information weights $\omega_{s,j}$ and mask $m_{s,j}$;
+    \item a mask of gain-correction bins that hit the configured cap;
+    \item a mask of additive-noise bins numerically indistinguishable from zero.
+\end{itemize}
 
 \subsection{Summary}
 
-The calibration problem is thus formulated as a constrained latent-variable estimation problem in which the common PSDs $\{S_k(f)\}$ and the sensor-specific transfer functions $\{G_s(f),N_s(f)\}$ are jointly inferred from common-field measurements. The key consequence is that the equal-condition dataset is used only to identify the instrumental distortions; once these distortions have been estimated, each sensor can be independently corrected in later operation, even when the underlying spectra differ across locations. The superior reliability of Sensor $7$ enters the model as soft prior information, thereby improving stability without imposing an unjustified perfect-reference assumption.
+The implemented estimator is therefore an alternating latent-variable scheme with the following specific structure:
+
+\begin{enumerate}
+    \item preprocess and align the common-field dataset;
+    \item normalize nominal gains to the network reference scale;
+    \item represent gain by a residual log correction and noise by a softplus parameter;
+    \item update the latent spectra by weighted least squares;
+    \item detect weakly identifiable frequencies from latent variation and refine this into sensor-specific information weights;
+    \item update each sensor by one sparse, frequency-coupled Gauss--Newton solve with smoothness and conservative reference penalties;
+    \item project the raw gain corrections onto the mean-zero identifiability constraint, with an optional symmetric box constraint in dB;
+    \item update residual variances and repeat.
+\end{enumerate}
+
+This is the actual solution implemented in the code. It is deliberately more conservative than the earlier idealized description: in weak-information bins it leans on regularization, damping, and projection rather than pretending that gain and additive floor are cleanly identifiable from the data.
+
 \end{document}
