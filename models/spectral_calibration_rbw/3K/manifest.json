@@ -1,21 +1,20 @@
 {
   "acquisition_dir": "/home/marti/Code/MeasurementCalibration/data/RBW_acquisitions/3K",
   "artifact_type": "spectral_calibration_model",
-  "created_at_utc": "2026-03-09T17:18:45.600970+00:00",
+  "created_at_utc": "2026-03-09T17:58:21.672650+00:00",
   "dataset": {
     "alignment_median_error_ms": {
-      "Node1": 1009.5,
-      "Node3": 1390.0,
-      "Node4": 934.0,
-      "Node5": 2823.0
+      "Node1": 0.0,
+      "Node3": 371.5,
+      "Node4": 1868.0
     },
     "experiment_timestamp_range_ms": [
-      1772848816522,
-      1772855897237
+      1772848815679,
+      1772855896678
     ],
     "n_experiments": 60,
     "n_frequencies": 16384,
-    "n_sensors": 4,
+    "n_sensors": 3,
     "selected_band_hz": [
       88000000.0,
       108000000.0
@@ -23,33 +22,36 @@
     "selected_rows_per_sensor": {
       "Node1": 60,
       "Node3": 60,
-      "Node4": 60,
-      "Node5": 60
+      "Node4": 60
     },
     "sensor_ids": [
       "Node1",
       "Node3",
-      "Node4",
-      "Node5"
+      "Node4"
     ],
     "sensor_shifts": {
       "Node1": 0,
       "Node3": 0,
-      "Node4": 0,
-      "Node5": 0
+      "Node4": 0
     }
   },
   "excluded_sensor_ids": [
+    "Node5",
     "Node9"
   ],
   "extra_summary": {
-    "corrected_mean_sensor_std_db": 0.3353658342254448,
-    "corrected_to_raw_dispersion_ratio": 0.22160364417198108,
-    "distribution_best_similarity": 0.6591256119298278,
+    "auto_qc_excluded_sensor_count": 1.0,
+    "corrected_mean_sensor_std_db": 0.20772158086894466,
+    "corrected_to_raw_dispersion_ratio": 0.17845833589170462,
+    "distribution_best_similarity": 0.6479940591614699,
     "distribution_outlier_count": 1.0,
-    "fit_duration_s": 2.5686611460005224,
-    "raw_mean_sensor_std_db": 1.5133588415413228,
-    "recordwise_best_mean_correlation": 0.9064017025879375,
+    "fit_duration_s": 4.33519513399915,
+    "manual_excluded_sensor_count": 1.0,
+    "max_invalid_corrected_fraction": 0.0,
+    "max_rmse_to_consensus_db": 0.660801178372449,
+    "n_fit_passes": 2.0,
+    "raw_mean_sensor_std_db": 1.163978022270689,
+    "recordwise_best_mean_correlation": 0.9175315612192239,
     "test_fraction": 0.2
   },
   "fit_config": {
@@ -64,16 +66,16 @@
     "reliable_weight_boost": 1.1
   },
   "parameters_file": "calibration_parameters.npz",
-  "reference_sensor_id": "Node3",
-  "reliable_sensor_id": "Node3",
+  "reference_sensor_id": "Node4",
+  "reliable_sensor_id": "Node4",
   "response_dir": null,
   "result_summary": {
-    "gain_cap_fraction": 0.00299072265625,
-    "global_low_information_fraction": 0.890380859375,
+    "gain_cap_fraction": 0.00020345052083333334,
+    "global_low_information_fraction": 0.90911865234375,
     "noise_zero_fraction": 0.0,
-    "objective_end": -43019439.63815423,
-    "objective_start": -42592603.30821457,
-    "sensor_low_information_fraction": 0.8912506103515625,
+    "objective_end": -32362072.90291805,
+    "objective_start": -32160995.0787428,
+    "sensor_low_information_fraction": 0.9092814127604166,
     "test_experiments": 12,
     "train_experiments": 48
   },

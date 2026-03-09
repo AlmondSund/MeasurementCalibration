@@ -1,0 +1,79 @@
+{
+  "acquisition_dir": "/home/marti/Code/MeasurementCalibration/data/RBW_acquisitions/10K",
+  "artifact_type": "spectral_calibration_model",
+  "created_at_utc": "2026-03-09T17:36:38.421458+00:00",
+  "dataset": {
+    "alignment_median_error_ms": {
+      "Node1": 0.0,
+      "Node3": 218.0,
+      "Node4": 1937.5
+    },
+    "experiment_timestamp_range_ms": [
+      1772856615634,
+      1772863695784
+    ],
+    "n_experiments": 60,
+    "n_frequencies": 4096,
+    "n_sensors": 3,
+    "selected_band_hz": [
+      88000000.0,
+      108000000.0
+    ],
+    "selected_rows_per_sensor": {
+      "Node1": 60,
+      "Node3": 60,
+      "Node4": 60
+    },
+    "sensor_ids": [
+      "Node1",
+      "Node3",
+      "Node4"
+    ],
+    "sensor_shifts": {
+      "Node1": 0,
+      "Node3": 0,
+      "Node4": 0
+    }
+  },
+  "excluded_sensor_ids": [
+    "Node5",
+    "Node9"
+  ],
+  "extra_summary": {
+    "corrected_mean_sensor_std_db": 0.34161002928347717,
+    "corrected_to_raw_dispersion_ratio": 0.1303488011955114,
+    "distribution_best_similarity": 0.2857167541591179,
+    "distribution_outlier_count": 0.0,
+    "fit_duration_s": 0.45579946500038204,
+    "raw_mean_sensor_std_db": 2.620737790837777,
+    "recordwise_best_mean_correlation": 0.9412486484419577,
+    "test_fraction": 0.2
+  },
+  "fit_config": {
+    "lambda_gain_reference": 4.0,
+    "lambda_gain_smooth": 120.0,
+    "lambda_noise_reference": 60.0,
+    "lambda_noise_smooth": 180.0,
+    "lambda_reliable_anchor": 1.0,
+    "low_information_threshold_ratio": 0.1,
+    "low_information_weight": 0.05,
+    "n_iterations": 8,
+    "reliable_weight_boost": 1.1
+  },
+  "parameters_file": "calibration_parameters.npz",
+  "reference_sensor_id": "Node3",
+  "reliable_sensor_id": "Node3",
+  "response_dir": null,
+  "result_summary": {
+    "gain_cap_fraction": 0.00146484375,
+    "global_low_information_fraction": 0.83544921875,
+    "noise_zero_fraction": 0.0,
+    "objective_end": -7883689.000760033,
+    "objective_start": -7758463.886249073,
+    "sensor_low_information_fraction": 0.8805338541666666,
+    "test_experiments": 12,
+    "train_experiments": 48
+  },
+  "schema_version": 1,
+  "sensor_summary_file": "sensor_summary.csv"
+}

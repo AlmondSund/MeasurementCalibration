@@ -8,8 +8,12 @@ import numpy as np
 
 from measurement_calibration.artifacts import load_spectral_calibration_artifact
 from measurement_calibration.rbw_calibration import (
+    RbwCalibrationValidationSummary,
+    RbwSensorValidationSummary,
     _select_reliable_sensor_id,
+    _select_rbw_qc_retrain_sensor_ids,
     fit_and_save_rbw_calibration_model,
+    identify_rbw_qc_outlier_sensor_ids,
     prepare_rbw_calibration_dataset,
 )
 from measurement_calibration.sensor_ranking import (
@@ -26,7 +30,10 @@ def test_prepare_rbw_calibration_dataset_excludes_node9_and_converts_to_linear()
 
     dataset = _synthetic_rbw_dataset()
 
-    preparation = prepare_rbw_calibration_dataset(dataset)
+    preparation = prepare_rbw_calibration_dataset(
+        dataset,
+        excluded_sensor_ids_by_label={},
+    )
     calibration_dataset = preparation.calibration_dataset
 
     assert calibration_dataset.sensor_ids == ("Node1", "Node3", "Node4", "Node5")
@@ -60,7 +67,10 @@ def test_prepare_rbw_calibration_dataset_uses_first_non_outlier_recordwise_senso
 ):
     """RBW preparation should keep the first record-wise non-outlier as anchor."""
 
-    preparation = prepare_rbw_calibration_dataset(_synthetic_rbw_dataset())
+    preparation = prepare_rbw_calibration_dataset(
+        _synthetic_rbw_dataset(),
+        excluded_sensor_ids_by_label={},
+    )
     expected_reliable_sensor_id = next(
         sensor_id
         for sensor_id in preparation.ranking_result.ranking_sensor_ids
@@ -69,6 +79,15 @@ def test_prepare_rbw_calibration_dataset_uses_first_non_outlier_recordwise_senso
 
     assert "Node4" in preparation.distribution_outlier_sensor_ids
     assert preparation.reliable_sensor_id == expected_reliable_sensor_id
+
+
+def test_prepare_rbw_calibration_dataset_applies_default_per_rbw_exclusions() -> None:
+    """RBW preparation should apply the repository default per-RBW exclusions."""
+
+    preparation = prepare_rbw_calibration_dataset(_synthetic_rbw_dataset())
+
+    assert preparation.calibration_dataset.sensor_ids == ("Node1", "Node3", "Node4")
+    assert preparation.excluded_sensor_ids == ("Node5", "Node9")
 
 
 def test_select_reliable_sensor_id_skips_distribution_outlier_recordwise_winner() -> (
@@ -108,7 +127,10 @@ def test_fit_and_save_rbw_calibration_model_writes_manifest_without_response_dir
 ) -> None:
     """RBW artifact persistence should not require a nominal-response directory."""
 
-    preparation = prepare_rbw_calibration_dataset(_synthetic_rbw_dataset())
+    preparation = prepare_rbw_calibration_dataset(
+        _synthetic_rbw_dataset(),
+        excluded_sensor_ids_by_label={},
+    )
     fit_result = fit_and_save_rbw_calibration_model(
         preparation=preparation,
         output_dir=tmp_path / "rbw-artifact",
@@ -125,6 +147,7 @@ def test_fit_and_save_rbw_calibration_model_writes_manifest_without_response_dir
             "low_information_weight": 0.05,
         },
         test_fraction=0.4,
+        auto_retrain_after_qc=False,
     )
     loaded = load_spectral_calibration_artifact(fit_result.artifact.output_dir)
 
@@ -139,6 +162,115 @@ def test_fit_and_save_rbw_calibration_model_writes_manifest_without_response_dir
     assert np.isfinite(fit_result.corrected_to_raw_dispersion_ratio)
     assert fit_result.corrected_mean_sensor_std_db > 0.0
     assert fit_result.raw_mean_sensor_std_db > 0.0
+
+
+def test_identify_rbw_qc_outlier_sensor_ids_flags_invalid_or_high_rmse_sensors() -> (
+    None
+):
+    """RBW QC should flag non-anchor sensors with invalid or outlying behavior."""
+
+    validation = RbwCalibrationValidationSummary(
+        raw_mean_sensor_std_db=1.8,
+        corrected_mean_sensor_std_db=0.7,
+        corrected_to_raw_dispersion_ratio=0.39,
+        sensor_rows=(
+            RbwSensorValidationSummary(
+                sensor_id="Node1",
+                mean_bias_to_consensus_db=0.0,
+                rmse_to_consensus_db=0.25,
+                invalid_corrected_fraction=0.0,
+                median_information_weight=0.95,
+                low_information_fraction=0.01,
+                gain_cap_fraction=0.0,
+                alignment_median_error_ms=25.0,
+            ),
+            RbwSensorValidationSummary(
+                sensor_id="Node3",
+                mean_bias_to_consensus_db=0.1,
+                rmse_to_consensus_db=0.45,
+                invalid_corrected_fraction=0.0,
+                median_information_weight=0.83,
+                low_information_fraction=0.02,
+                gain_cap_fraction=0.0,
+                alignment_median_error_ms=40.0,
+            ),
+            RbwSensorValidationSummary(
+                sensor_id="Node5",
+                mean_bias_to_consensus_db=-0.7,
+                rmse_to_consensus_db=2.9,
+                invalid_corrected_fraction=2.0e-3,
+                median_information_weight=0.44,
+                low_information_fraction=0.32,
+                gain_cap_fraction=0.12,
+                alignment_median_error_ms=2800.0,
+            ),
+        ),
+    )
+
+    flagged_sensor_ids = identify_rbw_qc_outlier_sensor_ids(
+        validation=validation,
+        reliable_sensor_id="Node1",
+    )
+
+    assert flagged_sensor_ids == ("Node5",)
+
+
+def test_select_rbw_qc_retrain_sensor_ids_keeps_only_worst_candidate() -> None:
+    """RBW QC retraining should remove the single worst sensor per pass."""
+
+    validation = RbwCalibrationValidationSummary(
+        raw_mean_sensor_std_db=1.8,
+        corrected_mean_sensor_std_db=0.7,
+        corrected_to_raw_dispersion_ratio=0.39,
+        sensor_rows=(
+            RbwSensorValidationSummary(
+                sensor_id="Node1",
+                mean_bias_to_consensus_db=0.0,
+                rmse_to_consensus_db=0.25,
+                invalid_corrected_fraction=0.0,
+                median_information_weight=0.95,
+                low_information_fraction=0.01,
+                gain_cap_fraction=0.0,
+                alignment_median_error_ms=25.0,
+            ),
+            RbwSensorValidationSummary(
+                sensor_id="Node3",
+                mean_bias_to_consensus_db=-0.3,
+                rmse_to_consensus_db=1.6,
+                invalid_corrected_fraction=0.003,
+                median_information_weight=0.60,
+                low_information_fraction=0.20,
+                gain_cap_fraction=0.02,
+                alignment_median_error_ms=900.0,
+            ),
+            RbwSensorValidationSummary(
+                sensor_id="Node5",
+                mean_bias_to_consensus_db=-0.7,
+                rmse_to_consensus_db=2.9,
+                invalid_corrected_fraction=0.010,
+                median_information_weight=0.44,
+                low_information_fraction=0.32,
+                gain_cap_fraction=0.12,
+                alignment_median_error_ms=2800.0,
+            ),
+        ),
+    )
+
+    selected_sensor_ids = _select_rbw_qc_retrain_sensor_ids(
+        validation=validation,
+        candidate_sensor_ids=("Node3", "Node5"),
+        retained_sensor_ids=("Node1", "Node3", "Node5"),
+    )
+
+    assert selected_sensor_ids == ("Node5",)
+    assert (
+        _select_rbw_qc_retrain_sensor_ids(
+            validation=validation,
+            candidate_sensor_ids=("Node3",),
+            retained_sensor_ids=("Node1", "Node3"),
+        )
+        == ()
+    )
 
 
 def _synthetic_rbw_dataset() -> RbwAcquisitionDataset:
