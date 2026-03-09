@@ -203,8 +203,13 @@ def test_fit_spectral_calibration_reduces_common_field_dispersion() -> None:
     assert np.all(np.isfinite(result.objective_history))
     assert result.objective_history[-1] < result.objective_history[0]
     assert result.latent_variation_power2.shape == (n_frequencies,)
-    assert result.information_weight.shape == (n_frequencies,)
-    assert result.low_information_mask.shape == (n_frequencies,)
+    assert result.frequency_information_weight.shape == (n_frequencies,)
+    assert result.information_weight.shape == (n_sensors, n_frequencies)
+    assert result.frequency_low_information_mask.shape == (n_frequencies,)
+    assert result.low_information_mask.shape == (n_sensors, n_frequencies)
+    assert result.gain_at_correction_bound_mask.shape == (n_sensors, n_frequencies)
+    assert result.noise_zero_mask.shape == (n_sensors, n_frequencies)
+    assert not np.any(result.noise_zero_mask)
 
 
 def test_fit_spectral_calibration_flags_low_information_bins() -> None:
@@ -245,11 +250,126 @@ def test_fit_spectral_calibration_flags_low_information_bins() -> None:
         low_information_weight=0.02,
     )
 
+    assert np.all(result.frequency_low_information_mask)
     assert np.all(result.low_information_mask)
+    assert np.allclose(result.frequency_information_weight, 0.02)
     assert np.allclose(result.information_weight, 0.02)
     assert np.max(np.abs(np.log(result.correction_gain_power))) < 0.12
     assert np.all(np.isfinite(result.additive_noise_power))
-    assert np.all(result.additive_noise_power >= 0.0)
+    assert np.all(result.additive_noise_power > 0.0)
+    assert not np.any(result.noise_zero_mask)
+
+
+def test_fit_spectral_calibration_downweights_sensor_specific_mismatch() -> None:
+    """A noisy sensor should receive lower local information weight than clean peers."""
+
+    rng = np.random.default_rng(21)
+    n_sensors = 3
+    n_experiments = 14
+    n_frequencies = 40
+    sensor_ids = tuple(f"Node{index + 1}" for index in range(n_sensors))
+    frequency_hz = np.linspace(88.0e6, 108.0e6, n_frequencies)
+    frequency_phase = np.linspace(0.0, 1.0, n_frequencies)
+
+    latent_spectra = np.vstack(
+        [
+            0.7
+            + 0.12 * np.sin(2.0 * np.pi * frequency_phase * (1.0 + experiment / 5.0))
+            + 0.03 * experiment
+            for experiment in range(n_experiments)
+        ]
+    )
+    latent_spectra = np.clip(latent_spectra, 0.15, None)
+    true_noise = 0.01 + 0.002 * np.vstack(
+        [
+            1.0 + 0.1 * np.cos(2.0 * np.pi * frequency_phase + phase)
+            for phase in (0.0, 0.5, 1.0)
+        ]
+    )
+
+    observations = (
+        latent_spectra[np.newaxis, :, :]
+        + true_noise[:, np.newaxis, :]
+        + 0.006 * rng.normal(size=(n_sensors, n_experiments, n_frequencies))
+    )
+    observations[1, :, 12:24] += 0.08 * rng.normal(size=(n_experiments, 12))
+    observations = np.clip(observations, 1.0e-6, None)
+
+    result = fit_spectral_calibration(
+        observations_power=observations,
+        frequency_hz=frequency_hz,
+        sensor_ids=sensor_ids,
+        nominal_gain_power=np.ones((n_sensors, n_frequencies)),
+        reliable_sensor_id="Node1",
+        n_iterations=6,
+        lambda_gain_smooth=20.0,
+        lambda_noise_smooth=15.0,
+        lambda_gain_reference=5.0,
+        lambda_noise_reference=40.0,
+    )
+
+    noisy_slice = slice(12, 24)
+    noisy_sensor_weight = np.median(result.information_weight[1, noisy_slice])
+    clean_sensor_weight = np.median(result.information_weight[0, noisy_slice])
+
+    assert np.median(result.frequency_information_weight[noisy_slice]) > 0.75
+    assert noisy_sensor_weight < 0.85 * clean_sensor_weight
+    assert np.mean(result.low_information_mask[1, noisy_slice]) > np.mean(
+        result.low_information_mask[0, noisy_slice]
+    )
+
+
+def test_fit_spectral_calibration_reports_gain_cap_hits() -> None:
+    """Residual-gain cap diagnostics should mark saturated bins explicitly."""
+
+    n_sensors = 3
+    n_experiments = 10
+    n_frequencies = 28
+    sensor_ids = tuple(f"Node{index + 1}" for index in range(n_sensors))
+    frequency_hz = np.linspace(88.0e6, 108.0e6, n_frequencies)
+    frequency_phase = np.linspace(0.0, 1.0, n_frequencies)
+
+    true_log_gain = np.vstack(
+        [
+            np.zeros(n_frequencies),
+            0.55 * np.sin(2.0 * np.pi * frequency_phase),
+            -0.45 * np.cos(2.0 * np.pi * frequency_phase),
+        ]
+    )
+    true_log_gain -= np.mean(true_log_gain, axis=0, keepdims=True)
+    true_gain = np.exp(true_log_gain)
+    latent_spectra = np.vstack(
+        [
+            0.9
+            + 0.2 * np.sin(2.0 * np.pi * frequency_phase * (1.0 + experiment / 7.0))
+            + 0.04 * experiment
+            for experiment in range(n_experiments)
+        ]
+    )
+    latent_spectra = np.clip(latent_spectra, 0.2, None)
+
+    observations = true_gain[:, np.newaxis, :] * latent_spectra[np.newaxis, :, :] + 0.01
+
+    result = fit_spectral_calibration(
+        observations_power=np.clip(observations, 1.0e-6, None),
+        frequency_hz=frequency_hz,
+        sensor_ids=sensor_ids,
+        nominal_gain_power=np.ones((n_sensors, n_frequencies)),
+        reliable_sensor_id="Node1",
+        n_iterations=6,
+        lambda_gain_smooth=10.0,
+        lambda_noise_smooth=10.0,
+        lambda_gain_reference=2.0,
+        lambda_noise_reference=20.0,
+        max_correction_db=0.5,
+    )
+
+    assert np.any(result.gain_at_correction_bound_mask[1:])
+    max_log_correction = np.log(10.0 ** (0.5 / 10.0))
+    assert (
+        np.max(np.abs(np.log(result.correction_gain_power)))
+        <= max_log_correction + 1.0e-8
+    )
 
 
 def test_apply_deployed_calibration_and_consensus_shapes() -> None:

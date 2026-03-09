@@ -120,13 +120,31 @@ class SpectralCalibrationResult:
         current network scale. This is a direct identifiability diagnostic:
         bins with very small latent variation do not support a stable
         gain-versus-noise separation.
+    frequency_information_weight:
+        Network-wide identifiability weights with shape ``(n_frequencies,)``.
+        These summarize how much across-experiment latent variation exists at
+        each frequency, regardless of sensor-specific residual quality.
     information_weight:
-        Per-frequency confidence weight in ``[0, 1]`` used during the joint
-        sensor updates. Low-information bins receive smaller data weight so the
-        smoothness and reference penalties dominate there.
+        Sensor-specific confidence weights in ``[0, 1]`` with shape
+        ``(n_sensors, n_frequencies)`` used during the joint sensor updates.
+        These combine the network-wide latent-variation diagnostic with a local
+        affine-design conditioning metric and a residual-SNR term, so noisy
+        sensors can be downweighted even when the global latent variation is
+        adequate.
+    frequency_low_information_mask:
+        Boolean mask with shape ``(n_frequencies,)`` that flags globally weak
+        bins from the latent-variation diagnostic alone.
     low_information_mask:
-        Boolean mask that marks bins whose latent variation fell below the
-        configured identifiability threshold.
+        Sensor-specific Boolean mask with shape ``(n_sensors, n_frequencies)``
+        that flags bins where the full local identifiability weight remains low.
+    gain_at_correction_bound_mask:
+        Boolean mask with shape ``(n_sensors, n_frequencies)`` that marks
+        residual gain corrections that saturate the configured log-gain cap.
+    noise_zero_mask:
+        Boolean mask with shape ``(n_sensors, n_frequencies)`` that marks
+        additive-noise estimates numerically indistinguishable from zero. With
+        the softplus parameterization this should usually remain false, which is
+        itself a useful boundary diagnostic.
     """
 
     sensor_ids: tuple[str, ...]
@@ -141,8 +159,12 @@ class SpectralCalibrationResult:
     test_indices: IndexArray
     objective_history: FloatArray
     latent_variation_power2: FloatArray
+    frequency_information_weight: FloatArray
     information_weight: FloatArray
+    frequency_low_information_mask: NDArray[np.bool_]
     low_information_mask: NDArray[np.bool_]
+    gain_at_correction_bound_mask: NDArray[np.bool_]
+    noise_zero_mask: NDArray[np.bool_]
 
 
 @dataclass(frozen=True)
@@ -171,6 +193,45 @@ def power_linear_to_db(
     return 10.0 * np.log10(
         np.clip(np.asarray(power_linear, dtype=np.float64), _EPSILON, None)
     )
+
+
+def _softplus(
+    values: FloatArray,  # Unconstrained real-valued parameter
+) -> FloatArray:  # Strictly positive mapped quantity on the same shape
+    """Map unconstrained values to positive reals with a stable softplus."""
+
+    values = np.asarray(values, dtype=np.float64)
+    return np.logaddexp(0.0, values)
+
+
+def _inverse_softplus(
+    positive_values: FloatArray,  # Strictly positive target values
+) -> FloatArray:  # Unconstrained parameter whose softplus returns the target
+    """Invert the softplus map for positive values in a numerically stable way."""
+
+    positive_values = np.clip(
+        np.asarray(positive_values, dtype=np.float64), _EPSILON, None
+    )
+    large_mask = positive_values > 20.0
+    inverse = np.empty_like(positive_values)
+    inverse[large_mask] = positive_values[large_mask]
+    inverse[~large_mask] = np.log(np.expm1(positive_values[~large_mask]))
+    return inverse
+
+
+def _sigmoid(
+    values: FloatArray,  # Unconstrained real-valued parameter
+) -> FloatArray:  # Logistic derivative in the interval (0, 1)
+    """Evaluate the logistic function with overflow-safe branches."""
+
+    values = np.asarray(values, dtype=np.float64)
+    positive_mask = values >= 0.0
+    negative_mask = ~positive_mask
+    result = np.empty_like(values)
+    result[positive_mask] = 1.0 / (1.0 + np.exp(-values[positive_mask]))
+    exp_values = np.exp(values[negative_mask])
+    result[negative_mask] = exp_values / (1.0 + exp_values)
+    return result
 
 
 def load_calibration_dataset(
@@ -388,18 +449,20 @@ def fit_spectral_calibration(
     low_information_weight: float = 0.10,  # Residual data weight applied to low-information bins
     min_variance: float = 1.0e-14,  # Numerical floor for residual variances
 ) -> SpectralCalibrationResult:  # Estimated gains, noise floors, and latent spectra
-    """Fit the alternating spectral calibration model in linear power scale.
+    """Fit the alternating spectral calibration model with structured priors.
 
     The implementation follows the structure of ``docs/main.tex``:
 
     - latent spectra are updated by weighted least squares;
-    - each sensor update solves one frequency-coupled linear system for the
-      residual gain correction and additive noise floor together;
-    - second-difference penalties smooth the gain and noise curves over
-      frequency inside that joint solve, rather than only after independent
-      per-bin fits;
-    - bins with too little latent-spectrum variation are downweighted so the
-      model does not force a fragile gain-versus-noise separation;
+    - each sensor update performs one frequency-coupled Gauss-Newton step on
+      the residual log-gain correction and a positive softplus noise
+      parameterization together;
+    - second-difference penalties smooth the residual log-gain curves over
+      frequency, which matches the multiplicative geometry of the transfer
+      function in dB space;
+    - global low-information bins are detected from latent-spectrum variation,
+      then refined into sensor-specific weights using the local affine-design
+      conditioning and residual-SNR diagnostics;
     - identifiability is enforced by requiring a unit geometric-mean gain at
       each frequency.
 
@@ -428,17 +491,19 @@ def fit_spectral_calibration(
     n_iterations:
         Number of alternating-estimation iterations.
     lambda_gain_smooth:
-        Second-difference penalty on the residual gain-correction curves.
+        Second-difference penalty on the residual log-gain-correction curves.
     lambda_noise_smooth:
-        Second-difference penalty on the additive noise curves.
+        Second-difference penalty on the unconstrained softplus noise
+        parameter. This keeps the positive noise floor smooth without forcing
+        hard clipping at zero.
     lambda_gain_reference:
-        Conservative quadratic penalty that keeps each gain-correction update
-        close to the previous iteration. This reduces bin-to-bin oscillations
-        when the calibration data are only weakly informative.
+        Conservative quadratic penalty that keeps each log-gain-correction
+        update close to the previous iteration. This reduces bin-to-bin
+        oscillations when the calibration data are only weakly informative.
     lambda_noise_reference:
-        Conservative quadratic penalty that keeps each additive noise update
-        close to the previous iteration. In practice this makes the noise floor
-        harder to move than the multiplicative gain.
+        Conservative quadratic penalty that keeps each softplus noise
+        parameter close to the previous iteration. In practice this makes the
+        additive floor harder to move than the multiplicative gain.
     lambda_reliable_anchor:
         Soft anchor that keeps the reliable sensor close to the nominal gain
         curve, or to unity when no nominal curve is provided.
@@ -448,17 +513,17 @@ def fit_spectral_calibration(
         variance prior in the document.
     max_correction_db:
         Optional bound on the residual multiplicative correction relative to the
-        nominal response. This encodes the modeling assumption that the
-        laboratory curve captures the dominant structure and the in-situ
-        correction should remain comparatively small.
+        nominal response. The cap is enforced in log-gain space, which keeps
+        the constraint symmetric in dB.
     low_information_threshold_ratio:
         Fraction of the median latent-spectrum variance used to define
-        low-information bins. Frequencies below this threshold are treated as
-        poorly identifiable for the gain-plus-noise decomposition.
+        globally weak bins. Frequencies below this threshold are treated as
+        poorly identifiable before the sensor-specific conditioning diagnostics
+        are applied.
     low_information_weight:
-        Residual data weight assigned to low-information bins. Values closer to
-        zero make the joint sensor update rely more heavily on smoothness and
-        reference penalties at those frequencies.
+        Residual data-weight floor assigned to low-information bins. Values
+        closer to zero make the joint sensor update rely more heavily on
+        smoothness and reference penalties at those frequencies.
     min_variance:
         Lower numerical bound for the residual variances.
 
@@ -481,6 +546,10 @@ def fit_spectral_calibration(
         raise ValueError("frequency_hz must have shape (n_frequencies,)")
     if n_iterations < 1:
         raise ValueError("n_iterations must be at least 1")
+    if lambda_gain_smooth < 0.0:
+        raise ValueError("lambda_gain_smooth cannot be negative")
+    if lambda_noise_smooth < 0.0:
+        raise ValueError("lambda_noise_smooth cannot be negative")
     if lambda_gain_reference < 0.0:
         raise ValueError("lambda_gain_reference cannot be negative")
     if lambda_noise_reference < 0.0:
@@ -532,26 +601,37 @@ def fit_spectral_calibration(
     )
 
     # Initialize the model from the nominal curves and a conservative low
-    # quantile of the observations as the starting additive floor.
-    gain_power = nominal_gain_power.copy()
+    # quantile of the observations as the starting additive floor. The solver
+    # operates on residual log-gain corrections and a softplus noise parameter,
+    # but the stored state remains in physically meaningful power units.
+    log_correction_gain = np.zeros((n_sensors, n_frequencies), dtype=np.float64)
+    gain_power = nominal_gain_power * np.exp(log_correction_gain)
     additive_noise_power = 0.10 * np.quantile(train_observations, 0.05, axis=1)
+    noise_parameter = _inverse_softplus(additive_noise_power)
     latent_spectra_power = np.median(
-        train_observations / gain_power[:, np.newaxis, :], axis=0
+        (train_observations - additive_noise_power[:, np.newaxis, :])
+        / np.clip(gain_power[:, np.newaxis, :], _EPSILON, None),
+        axis=0,
     )
     latent_spectra_power = np.clip(latent_spectra_power, _EPSILON, None)
 
     residuals = (
         train_observations
         - gain_power[:, np.newaxis, :] * latent_spectra_power[np.newaxis, :, :]
+        - additive_noise_power[:, np.newaxis, :]
     )
     residual_variance_power2 = np.maximum(np.mean(residuals**2, axis=1), min_variance)
 
     second_difference = _second_difference_operator(n_frequencies)
     smooth_penalty = (second_difference.T @ second_difference).tocsc()
-    correction_gain_power = np.clip(gain_power / nominal_gain_power, _EPSILON, None)
+    correction_gain_power = np.exp(log_correction_gain)
     latent_variation_power2 = np.zeros(n_frequencies, dtype=np.float64)
-    information_weight = np.ones(n_frequencies, dtype=np.float64)
-    low_information_mask = np.zeros(n_frequencies, dtype=bool)
+    frequency_information_weight = np.ones(n_frequencies, dtype=np.float64)
+    information_weight = np.ones((n_sensors, n_frequencies), dtype=np.float64)
+    frequency_low_information_mask = np.zeros(n_frequencies, dtype=bool)
+    low_information_mask = np.zeros((n_sensors, n_frequencies), dtype=bool)
+    gain_at_correction_bound_mask = np.zeros((n_sensors, n_frequencies), dtype=bool)
+    noise_zero_mask = np.zeros((n_sensors, n_frequencies), dtype=bool)
 
     objective_history = []
 
@@ -573,40 +653,61 @@ def fit_spectral_calibration(
 
         (
             latent_variation_power2,
-            information_weight,
-            low_information_mask,
+            frequency_information_weight,
+            frequency_low_information_mask,
         ) = _frequency_information_weights(
             latent_spectra_power=latent_spectra_power,
             low_information_threshold_ratio=low_information_threshold_ratio,
             low_information_weight=low_information_weight,
         )
 
-        raw_gain_power = np.empty_like(gain_power)
-        raw_noise_power = np.empty_like(additive_noise_power)
+        (
+            information_weight,
+            low_information_mask,
+        ) = _sensor_information_weights(
+            latent_spectra_power=latent_spectra_power,
+            gain_power=gain_power,
+            noise_parameter=noise_parameter,
+            residual_variance_power2=residual_variance_power2,
+            frequency_information_weight=frequency_information_weight,
+            frequency_low_information_mask=frequency_low_information_mask,
+            low_information_weight=low_information_weight,
+        )
 
-        # Update each sensor with a single frequency-coupled linear solve. The
-        # gain correction is damped toward the previous iteration, while the
-        # additive noise floor is kept even more conservative.
+        raw_log_correction = np.empty_like(log_correction_gain)
+        raw_noise_parameter = np.empty_like(noise_parameter)
+        raw_gain_at_bound_mask = np.zeros_like(gain_at_correction_bound_mask)
+
+        # Update each sensor with a single frequency-coupled sparse solve around
+        # the current nonlinear parameterization. This keeps the scalability of
+        # the original joint system while moving the smoothness prior to the
+        # correct log-gain geometry.
         for sensor_index in range(n_sensors):
             gain_reference_weight = lambda_gain_reference
-            gain_reference_power = correction_gain_power[sensor_index]
+            log_correction_target = log_correction_gain[sensor_index].copy()
             if sensor_index == reliable_sensor_index:
                 total_reference_weight = gain_reference_weight + lambda_reliable_anchor
                 if total_reference_weight > 0.0:
-                    gain_reference_power = (
-                        gain_reference_weight * gain_reference_power
-                        + lambda_reliable_anchor
+                    log_correction_target = (
+                        gain_reference_weight * log_correction_target
+                        + lambda_reliable_anchor * 0.0
                     ) / total_reference_weight
                     gain_reference_weight = total_reference_weight
 
-            gain_fit, noise_fit = _fit_sensor_joint_curves(
+            (
+                log_correction_fit,
+                noise_parameter_fit,
+                sensor_gain_at_bound_mask,
+            ) = _fit_sensor_joint_curves(
                 latent_spectra_power=latent_spectra_power,
                 observations_power=train_observations[sensor_index],
                 nominal_gain_power=nominal_gain_power[sensor_index],
-                correction_reference_power=gain_reference_power,
-                noise_reference_power=additive_noise_power[sensor_index],
+                log_correction_linearization=log_correction_gain[sensor_index],
+                log_correction_target=log_correction_target,
+                noise_parameter_linearization=noise_parameter[sensor_index],
+                noise_parameter_target=noise_parameter[sensor_index],
                 observation_weight=weights[sensor_index],
-                information_weight=information_weight,
+                information_weight=information_weight[sensor_index],
                 smooth_penalty=smooth_penalty,
                 lambda_gain_smooth=lambda_gain_smooth,
                 lambda_noise_smooth=lambda_noise_smooth,
@@ -614,20 +715,41 @@ def fit_spectral_calibration(
                 lambda_noise_reference=lambda_noise_reference,
                 max_log_correction=max_log_correction,
             )
-            raw_gain_power[sensor_index] = gain_fit
-            raw_noise_power[sensor_index] = noise_fit
+            raw_log_correction[sensor_index] = log_correction_fit
+            raw_noise_parameter[sensor_index] = noise_parameter_fit
+            raw_gain_at_bound_mask[sensor_index] = sensor_gain_at_bound_mask
 
-        gain_power = raw_gain_power
-        additive_noise_power = raw_noise_power
+        projected_log_correction = _project_log_corrections(
+            raw_log_correction,
+            max_log_correction=max_log_correction,
+        )
+        common_log_shift = np.mean(
+            raw_log_correction - projected_log_correction,
+            axis=0,
+            keepdims=True,
+        )
+        log_correction_gain = projected_log_correction
+        noise_parameter = raw_noise_parameter
+        correction_gain_power = np.exp(log_correction_gain)
+        gain_power = nominal_gain_power * correction_gain_power
+        additive_noise_power = _softplus(noise_parameter)
 
         # Enforce the identifiability constraint by moving the common frequency
-        # scale into the latent spectrum.
-        log_gain = np.log(np.clip(gain_power, _EPSILON, None))
-        log_gain_mean = np.mean(log_gain, axis=0, keepdims=True)
-        scale_factor = np.exp(log_gain_mean)
-        gain_power = gain_power / scale_factor
-        latent_spectra_power = latent_spectra_power * scale_factor[0]
-        correction_gain_power = gain_power / nominal_gain_power
+        # scale that was removed from the gain curves into the latent spectrum.
+        latent_spectra_power = latent_spectra_power * np.exp(common_log_shift[0])
+        correction_gain_power = np.exp(log_correction_gain)
+        gain_power = nominal_gain_power * correction_gain_power
+
+        if max_log_correction is None:
+            gain_at_correction_bound_mask = raw_gain_at_bound_mask
+        else:
+            gain_at_correction_bound_mask = raw_gain_at_bound_mask | np.isclose(
+                np.abs(log_correction_gain),
+                max_log_correction,
+                rtol=0.0,
+                atol=1.0e-8,
+            )
+        noise_zero_mask = additive_noise_power <= _EPSILON
 
         residuals = (
             train_observations
@@ -641,8 +763,8 @@ def fit_spectral_calibration(
             _penalized_objective(
                 residuals=residuals,
                 residual_variance_power2=residual_variance_power2,
-                correction_gain_power=correction_gain_power,
-                additive_noise_power=additive_noise_power,
+                log_correction_gain=log_correction_gain,
+                noise_parameter=noise_parameter,
                 reliable_sensor_index=reliable_sensor_index,
                 second_difference=second_difference,
                 lambda_gain_smooth=lambda_gain_smooth,
@@ -664,8 +786,12 @@ def fit_spectral_calibration(
         test_indices=test_indices,
         objective_history=np.asarray(objective_history, dtype=np.float64),
         latent_variation_power2=latent_variation_power2,
+        frequency_information_weight=frequency_information_weight,
         information_weight=information_weight,
+        frequency_low_information_mask=frequency_low_information_mask,
         low_information_mask=low_information_mask,
+        gain_at_correction_bound_mask=gain_at_correction_bound_mask,
+        noise_zero_mask=noise_zero_mask,
     )
 
 
@@ -958,41 +1084,52 @@ def _fit_sensor_joint_curves(
     latent_spectra_power: FloatArray,  # Latent spectra with shape (experiments, frequencies)
     observations_power: FloatArray,  # Sensor observations with shape (experiments, frequencies)
     nominal_gain_power: FloatArray,  # Nominal multiplicative response for the sensor
-    correction_reference_power: FloatArray,  # Conservative target for the residual gain correction
-    noise_reference_power: FloatArray,  # Conservative target for the additive noise floor
+    log_correction_linearization: FloatArray,  # Current residual log-gain iterate used for linearization
+    log_correction_target: FloatArray,  # Conservative target for the residual log-gain correction
+    noise_parameter_linearization: FloatArray,  # Current unconstrained noise parameter used for linearization
+    noise_parameter_target: FloatArray,  # Conservative target for the noise parameter
     observation_weight: FloatArray,  # Residual-variance weights for this sensor
-    information_weight: FloatArray,  # Identifiability weights for each frequency bin
+    information_weight: FloatArray,  # Sensor-specific identifiability weights for each frequency bin
     smooth_penalty: sparse.csc_matrix,  # Second-difference Gram matrix over frequency
-    lambda_gain_smooth: float,  # Gain smoothness penalty
-    lambda_noise_smooth: float,  # Noise smoothness penalty
-    lambda_gain_reference: float,  # Damping toward the previous correction
-    lambda_noise_reference: float,  # Damping toward the previous noise floor
-    max_log_correction: float | None,  # Optional symmetric log bound on the residual gain correction
-) -> tuple[FloatArray, FloatArray]:  # Gain and additive noise curves for one sensor
+    lambda_gain_smooth: float,  # Log-gain smoothness penalty
+    lambda_noise_smooth: float,  # Noise-parameter smoothness penalty
+    lambda_gain_reference: float,  # Damping toward the previous log correction
+    lambda_noise_reference: float,  # Damping toward the previous noise parameter
+    max_log_correction: float
+    | None,  # Optional symmetric log bound on the residual gain correction
+) -> tuple[
+    FloatArray, FloatArray, NDArray[np.bool_]
+]:  # Updated log-gain correction, noise parameter, and cap mask for one sensor
     """Solve one conservative frequency-coupled gain/noise update for a sensor.
 
-    The data term uses the affine model ``y = (g_nominal * c) x + n`` across all
-    training experiments. Frequencies are coupled through second-difference
-    penalties, while low-information bins are downweighted via
-    ``information_weight`` so the update falls back to the smooth conservative
+    The state is nonlinear in both the multiplicative gain and the positive
+    additive floor, so this helper performs one sparse Gauss-Newton step around
+    the current iterate. Frequencies remain coupled through the second-
+    difference penalties, while low-information bins are downweighted via
+    ``information_weight`` so the update falls back to the conservative
     references instead of producing unstable boundary solutions.
     """
 
     n_experiments, n_frequencies = latent_spectra_power.shape
     effective_weight = observation_weight * information_weight
-    scaled_latent = latent_spectra_power * nominal_gain_power[np.newaxis, :]
+    gain_power = nominal_gain_power * np.exp(log_correction_linearization)
+    noise_power = _softplus(noise_parameter_linearization)
+    noise_jacobian = _sigmoid(noise_parameter_linearization)
+
+    # Linearize the nonlinear model around the current iterate:
+    # y ≈ g_ref * S + n_ref + (g_ref * S) * δ_gamma + sigmoid(eta_ref) * δ_eta.
+    gain_design = gain_power[np.newaxis, :] * latent_spectra_power
+    residual_rhs = observations_power - gain_design - noise_power[np.newaxis, :]
 
     # The normal equations remain sparse because the data term is diagonal in
     # frequency and only the smoothness penalty couples neighboring bins.
-    gain_data_diagonal = effective_weight * np.sum(scaled_latent**2, axis=0)
-    gain_noise_cross = effective_weight * np.sum(scaled_latent, axis=0)
-    noise_data_diagonal = effective_weight * float(n_experiments)
-    gain_rhs = effective_weight * np.sum(scaled_latent * observations_power, axis=0)
-    noise_rhs = effective_weight * np.sum(observations_power, axis=0)
+    gain_data_diagonal = effective_weight * np.sum(gain_design**2, axis=0)
+    gain_noise_cross = effective_weight * noise_jacobian * np.sum(gain_design, axis=0)
+    noise_data_diagonal = effective_weight * float(n_experiments) * noise_jacobian**2
+    gain_rhs = effective_weight * np.sum(gain_design * residual_rhs, axis=0)
+    noise_rhs = effective_weight * noise_jacobian * np.sum(residual_rhs, axis=0)
 
-    gain_block = sparse.diags(
-        gain_data_diagonal + lambda_gain_reference, format="csc"
-    )
+    gain_block = sparse.diags(gain_data_diagonal + lambda_gain_reference, format="csc")
     noise_block = sparse.diags(
         noise_data_diagonal + lambda_noise_reference, format="csc"
     )
@@ -1001,40 +1138,53 @@ def _fit_sensor_joint_curves(
     if smooth_penalty.shape[0] != 0:
         gain_block = gain_block + lambda_gain_smooth * smooth_penalty
         noise_block = noise_block + lambda_noise_smooth * smooth_penalty
+        gain_rhs = gain_rhs - lambda_gain_smooth * (
+            smooth_penalty @ log_correction_linearization
+        )
+        noise_rhs = noise_rhs - lambda_noise_smooth * (
+            smooth_penalty @ noise_parameter_linearization
+        )
 
     system_matrix = sparse.bmat(
         [[gain_block, cross_block], [cross_block, noise_block]], format="csc"
     )
     system_rhs = np.concatenate(
         [
-            gain_rhs + lambda_gain_reference * correction_reference_power,
-            noise_rhs + lambda_noise_reference * noise_reference_power,
+            gain_rhs
+            + lambda_gain_reference
+            * (log_correction_target - log_correction_linearization),
+            noise_rhs
+            + lambda_noise_reference
+            * (noise_parameter_target - noise_parameter_linearization),
         ]
     )
     solution = spsolve(system_matrix, system_rhs)
     if not np.all(np.isfinite(solution)):
-        correction_gain_power = correction_reference_power.copy()
-        additive_noise_power = noise_reference_power.copy()
-        gain_power = nominal_gain_power * correction_gain_power
-        return gain_power, additive_noise_power
+        empty_mask = np.zeros(n_frequencies, dtype=bool)
+        return (
+            log_correction_linearization.copy(),
+            noise_parameter_linearization.copy(),
+            empty_mask,
+        )
 
-    correction_gain_power = np.asarray(solution[:n_frequencies], dtype=np.float64)
-    additive_noise_power = np.asarray(solution[n_frequencies:], dtype=np.float64)
+    delta_log_correction = np.asarray(solution[:n_frequencies], dtype=np.float64)
+    delta_noise_parameter = np.asarray(solution[n_frequencies:], dtype=np.float64)
+    log_correction = log_correction_linearization + delta_log_correction
+    noise_parameter = noise_parameter_linearization + delta_noise_parameter
 
     if max_log_correction is None:
-        correction_lower_bound = _EPSILON
-        correction_upper_bound = None
+        gain_at_bound_mask = np.zeros(n_frequencies, dtype=bool)
     else:
-        correction_lower_bound = math.exp(-max_log_correction)
-        correction_upper_bound = math.exp(max_log_correction)
-    correction_gain_power = np.clip(
-        correction_gain_power,
-        correction_lower_bound,
-        correction_upper_bound,
-    )
-    additive_noise_power = np.clip(additive_noise_power, 0.0, None)
-    gain_power = nominal_gain_power * correction_gain_power
-    return gain_power, additive_noise_power
+        log_correction = np.clip(
+            log_correction, -max_log_correction, max_log_correction
+        )
+        gain_at_bound_mask = np.isclose(
+            np.abs(log_correction),
+            max_log_correction,
+            rtol=0.0,
+            atol=1.0e-8,
+        )
+    return log_correction, noise_parameter, gain_at_bound_mask
 
 
 def _frequency_information_weights(
@@ -1054,21 +1204,118 @@ def _frequency_information_weights(
     latent_variation_power2 = np.var(latent_spectra_power, axis=0)
     positive_variation = latent_variation_power2[latent_variation_power2 > _EPSILON]
     if positive_variation.size == 0:
-        information_weight = np.full(latent_variation_power2.shape, low_information_weight)
-        low_information_mask = np.ones(latent_variation_power2.shape, dtype=bool)
-        return latent_variation_power2, information_weight, low_information_mask
+        frequency_information_weight = np.full(
+            latent_variation_power2.shape, low_information_weight
+        )
+        frequency_low_information_mask = np.ones(
+            latent_variation_power2.shape, dtype=bool
+        )
+        return (
+            latent_variation_power2,
+            frequency_information_weight,
+            frequency_low_information_mask,
+        )
 
     variance_threshold = max(
         float(np.median(positive_variation)) * low_information_threshold_ratio,
         _EPSILON,
     )
-    information_weight = np.clip(
+    frequency_information_weight = np.clip(
         latent_variation_power2 / variance_threshold,
         low_information_weight,
         1.0,
     )
-    low_information_mask = latent_variation_power2 < variance_threshold
-    return latent_variation_power2, information_weight, low_information_mask
+    frequency_low_information_mask = latent_variation_power2 < variance_threshold
+    return (
+        latent_variation_power2,
+        frequency_information_weight,
+        frequency_low_information_mask,
+    )
+
+
+def _sensor_information_weights(
+    latent_spectra_power: FloatArray,  # Latent spectra with shape (experiments, frequencies)
+    gain_power: FloatArray,  # Current gain curves with shape (sensors, frequencies)
+    noise_parameter: FloatArray,  # Current unconstrained noise parameter
+    residual_variance_power2: FloatArray,  # Sensor residual variances with shape (sensors, frequencies)
+    frequency_information_weight: FloatArray,  # Network-wide latent-variation weights
+    frequency_low_information_mask: NDArray[np.bool_],  # Global low-information mask
+    low_information_weight: float,  # Minimum data weight for weakly informative bins
+) -> tuple[FloatArray, NDArray[np.bool_]]:
+    """Refine global identifiability diagnostics into sensor-specific weights.
+
+    The global latent-variation diagnostic is necessary but not sufficient:
+    one sensor can still be poorly conditioned at a bin because its local gain
+    scale, noise sensitivity, or residual variance makes the affine
+    gain-versus-noise decomposition fragile. This helper combines three terms:
+
+    - the frequency-only latent-variation weight;
+    - a local affine-design balance term based on the columns ``[G_s S_k, 1]``;
+    - a sensor-specific residual-SNR term.
+    """
+
+    n_sensors, n_frequencies = gain_power.shape
+    n_experiments = latent_spectra_power.shape[0]
+    latent_centered = latent_spectra_power - np.mean(
+        latent_spectra_power, axis=0, keepdims=True
+    )
+
+    # The affine design is identifiable only when both the varying signal term
+    # and the intercept-sensitive noise term carry comparable energy.
+    centered_signal_energy = gain_power**2 * np.sum(
+        latent_centered**2, axis=0, keepdims=True
+    )
+    intercept_energy = float(n_experiments) * _sigmoid(noise_parameter) ** 2
+    design_balance = np.minimum(centered_signal_energy, intercept_energy) / np.clip(
+        np.maximum(centered_signal_energy, intercept_energy),
+        _EPSILON,
+        None,
+    )
+
+    # Downweight sensors whose modeled latent variation is small relative to
+    # their current residual variance, since those bins are still effectively
+    # dominated by mismatch or noise.
+    signal_variation_power2 = gain_power**2 * np.var(
+        latent_spectra_power, axis=0, keepdims=True
+    )
+    residual_snr = signal_variation_power2 / np.clip(
+        signal_variation_power2 + residual_variance_power2,
+        _EPSILON,
+        None,
+    )
+
+    positive_design_balance = design_balance[design_balance > _EPSILON]
+    design_reference = max(
+        _EPSILON
+        if positive_design_balance.size == 0
+        else float(np.median(positive_design_balance)),
+        _EPSILON,
+    )
+    positive_residual_snr = residual_snr[residual_snr > _EPSILON]
+    residual_reference = max(
+        _EPSILON
+        if positive_residual_snr.size == 0
+        else float(np.median(positive_residual_snr)),
+        _EPSILON,
+    )
+    normalized_design_balance = np.clip(design_balance / design_reference, 0.0, 1.0)
+    normalized_residual_snr = np.clip(residual_snr / residual_reference, 0.0, 1.0)
+
+    raw_information = (
+        frequency_information_weight[np.newaxis, :]
+        * normalized_design_balance
+        * normalized_residual_snr
+    )
+    information_weight = np.clip(raw_information, low_information_weight, 1.0)
+    # The notebook uses this mask for visual warnings, so keep the threshold
+    # high enough to mark bins that are merely marginal, not only catastrophic.
+    low_information_mask = frequency_low_information_mask[np.newaxis, :] | (
+        information_weight <= max(low_information_weight, 0.60)
+    )
+
+    if information_weight.shape != (n_sensors, n_frequencies):
+        raise ValueError("sensor-specific information weights have an unexpected shape")
+    return information_weight, low_information_mask
 
 
 def _second_difference_operator(
@@ -1093,12 +1340,12 @@ def _second_difference_operator(
 def _penalized_objective(
     residuals: FloatArray,  # Training residual tensor
     residual_variance_power2: FloatArray,  # Estimated residual variances
-    correction_gain_power: FloatArray,  # Residual multiplicative gain correction
-    additive_noise_power: FloatArray,  # Estimated additive noise floor
+    log_correction_gain: FloatArray,  # Residual log-gain correction
+    noise_parameter: FloatArray,  # Unconstrained softplus noise parameter
     reliable_sensor_index: int,  # Index of the softly anchored sensor
     second_difference: sparse.csc_matrix,  # Finite-difference operator
     lambda_gain_smooth: float,  # Log-gain smoothness weight
-    lambda_noise_smooth: float,  # Noise smoothness weight
+    lambda_noise_smooth: float,  # Noise-parameter smoothness weight
     lambda_reliable_anchor: float,  # Reliable sensor anchor weight
 ) -> float:  # Penalized objective value
     """Evaluate the penalized negative log-likelihood used by the estimator."""
@@ -1113,14 +1360,10 @@ def _penalized_objective(
         gain_penalty = 0.0
         noise_penalty = 0.0
     else:
-        gain_penalty = float(
-            np.sum((second_difference @ np.clip(correction_gain_power.T, _EPSILON, None)) ** 2)
-        )
-        noise_penalty = float(np.sum((second_difference @ additive_noise_power.T) ** 2))
+        gain_penalty = float(np.sum((second_difference @ log_correction_gain.T) ** 2))
+        noise_penalty = float(np.sum((second_difference @ noise_parameter.T) ** 2))
 
-    reliable_penalty = float(
-        np.sum((correction_gain_power[reliable_sensor_index] - 1.0) ** 2)
-    )
+    reliable_penalty = float(np.sum(log_correction_gain[reliable_sensor_index] ** 2))
     return (
         nll
         + lambda_gain_smooth * gain_penalty
@@ -1136,6 +1379,50 @@ def _normalize_geometric_mean(
 
     log_gain = np.log(np.clip(gain_power, _EPSILON, None))
     return np.exp(log_gain - np.mean(log_gain, axis=0, keepdims=True))
+
+
+def _project_log_corrections(
+    log_correction_gain: FloatArray,  # Residual log-gain corrections
+    max_log_correction: float | None,  # Optional symmetric absolute bound
+) -> FloatArray:  # Mean-zero corrections that respect the optional box bound
+    """Project log-gain corrections onto the identifiability and cap constraints.
+
+    The calibration model is identifiable only up to a common multiplicative
+    frequency scale, so the residual log-gain curves are projected to zero mean
+    across sensors at each frequency. When a correction cap is configured, the
+    projection also enforces the symmetric box constraint in log space.
+    """
+
+    log_correction_gain = np.asarray(log_correction_gain, dtype=np.float64)
+    if max_log_correction is None:
+        return log_correction_gain - np.mean(log_correction_gain, axis=0, keepdims=True)
+
+    lower_offset = (
+        np.min(log_correction_gain, axis=0, keepdims=True) - max_log_correction
+    )
+    upper_offset = (
+        np.max(log_correction_gain, axis=0, keepdims=True) + max_log_correction
+    )
+
+    # The clipped mean is monotone in the scalar offset, so a vectorized
+    # bisection finds the unique mean-zero projection at each frequency.
+    for _ in range(48):
+        midpoint = 0.5 * (lower_offset + upper_offset)
+        clipped = np.clip(
+            log_correction_gain - midpoint,
+            -max_log_correction,
+            max_log_correction,
+        )
+        positive_mean_mask = np.mean(clipped, axis=0, keepdims=True) > 0.0
+        lower_offset = np.where(positive_mean_mask, midpoint, lower_offset)
+        upper_offset = np.where(positive_mean_mask, upper_offset, midpoint)
+
+    offset = 0.5 * (lower_offset + upper_offset)
+    return np.clip(
+        log_correction_gain - offset,
+        -max_log_correction,
+        max_log_correction,
+    )
 
 
 def _sensor_index(
