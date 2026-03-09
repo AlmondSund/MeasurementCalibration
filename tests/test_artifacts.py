@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 
@@ -14,6 +15,7 @@ from measurement_calibration.artifacts import (
 from measurement_calibration.spectral_calibration import (
     CalibrationDataset,
     fit_spectral_calibration,
+    resolve_spectral_fit_config,
 )
 
 
@@ -36,6 +38,7 @@ def test_save_and_load_spectral_calibration_artifact_round_trip(
         "low_information_threshold_ratio": 0.10,
         "low_information_weight": 0.05,
     }
+    resolved_fit_config = resolve_spectral_fit_config(fit_config)
 
     result = fit_spectral_calibration(
         observations_power=dataset.observations_power,
@@ -45,17 +48,33 @@ def test_save_and_load_spectral_calibration_artifact_round_trip(
         train_indices=train_indices,
         test_indices=test_indices,
         reliable_sensor_id="Node1",
-        n_iterations=int(fit_config["n_iterations"]),
-        lambda_gain_smooth=float(fit_config["lambda_gain_smooth"]),
-        lambda_noise_smooth=float(fit_config["lambda_noise_smooth"]),
-        lambda_gain_reference=float(fit_config["lambda_gain_reference"]),
-        lambda_noise_reference=float(fit_config["lambda_noise_reference"]),
-        lambda_reliable_anchor=float(fit_config["lambda_reliable_anchor"]),
-        reliable_weight_boost=float(fit_config["reliable_weight_boost"]),
-        low_information_threshold_ratio=float(
-            fit_config["low_information_threshold_ratio"]
+        n_iterations=int(cast(int, resolved_fit_config["n_iterations"])),
+        lambda_gain_smooth=float(
+            cast(float, resolved_fit_config["lambda_gain_smooth"])
         ),
-        low_information_weight=float(fit_config["low_information_weight"]),
+        lambda_noise_smooth=float(
+            cast(float, resolved_fit_config["lambda_noise_smooth"])
+        ),
+        lambda_gain_reference=float(
+            cast(float, resolved_fit_config["lambda_gain_reference"])
+        ),
+        lambda_noise_reference=float(
+            cast(float, resolved_fit_config["lambda_noise_reference"])
+        ),
+        lambda_reliable_anchor=float(
+            cast(float, resolved_fit_config["lambda_reliable_anchor"])
+        ),
+        reliable_weight_boost=float(
+            cast(float, resolved_fit_config["reliable_weight_boost"])
+        ),
+        max_correction_db=cast(float | None, resolved_fit_config["max_correction_db"]),
+        low_information_threshold_ratio=float(
+            cast(float, resolved_fit_config["low_information_threshold_ratio"])
+        ),
+        low_information_weight=float(
+            cast(float, resolved_fit_config["low_information_weight"])
+        ),
+        min_variance=float(cast(float, resolved_fit_config["min_variance"])),
     )
 
     artifact = save_spectral_calibration_artifact(
@@ -67,7 +86,7 @@ def test_save_and_load_spectral_calibration_artifact_round_trip(
         reference_sensor_id="Node1",
         reliable_sensor_id="Node1",
         excluded_sensor_ids=(),
-        fit_config=fit_config,
+        fit_config=resolved_fit_config,
         extra_summary={"fit_duration_s": 0.25, "test_fraction": 1.0 / 3.0},
     )
     loaded = load_spectral_calibration_artifact(artifact.output_dir)
@@ -76,7 +95,12 @@ def test_save_and_load_spectral_calibration_artifact_round_trip(
     assert loaded.manifest["dataset"]["sensor_ids"] == list(dataset.sensor_ids)
     assert loaded.manifest["result_summary"]["train_experiments"] == 4
     assert loaded.manifest["result_summary"]["test_experiments"] == 2
+    assert loaded.manifest["result_summary"]["solver_nonfinite_step_count"] == 0
     assert loaded.manifest["extra_summary"]["fit_duration_s"] == 0.25
+    assert loaded.manifest["fit_config"]["max_correction_db"] == 12.0
+    assert loaded.manifest["fit_config"]["min_variance"] == 1.0e-14
+    assert loaded.manifest["fit_split"]["train_indices"] == [0, 1, 2, 3]
+    assert loaded.manifest["fit_split"]["test_indices"] == [4, 5]
 
     assert loaded.result.sensor_ids == result.sensor_ids
     assert np.allclose(loaded.result.frequency_hz, result.frequency_hz)
@@ -126,6 +150,10 @@ def test_save_and_load_spectral_calibration_artifact_round_trip(
         result.gain_at_correction_bound_mask,
     )
     assert np.array_equal(loaded.result.noise_zero_mask, result.noise_zero_mask)
+    assert np.array_equal(
+        loaded.result.solver_nonfinite_step_count,
+        result.solver_nonfinite_step_count,
+    )
 
     with loaded.sensor_summary_path.open(newline="", encoding="utf-8") as csv_file:
         rows = list(csv.DictReader(csv_file))
@@ -134,6 +162,7 @@ def test_save_and_load_spectral_calibration_artifact_round_trip(
     assert rows[0]["sensor_id"] == "Node1"
     assert "median_total_gain_db" in rows[0]
     assert "low_information_fraction" in rows[0]
+    assert "solver_nonfinite_step_count" in rows[0]
 
 
 def _synthetic_dataset() -> CalibrationDataset:

@@ -17,14 +17,16 @@ The implementation keeps the numerical core separate from notebook orchestration
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 import csv
+import inspect
 import json
 import math
 import sys
 from pathlib import Path
 from statistics import median
+import warnings
 
 import numpy as np
 from numpy.typing import NDArray
@@ -36,6 +38,19 @@ FloatArray = NDArray[np.float64]
 IndexArray = NDArray[np.int64]
 
 _EPSILON = 1.0e-12
+_SPECTRAL_FIT_CONFIG_PARAMETER_NAMES = (
+    "n_iterations",
+    "lambda_gain_smooth",
+    "lambda_noise_smooth",
+    "lambda_gain_reference",
+    "lambda_noise_reference",
+    "lambda_reliable_anchor",
+    "reliable_weight_boost",
+    "max_correction_db",
+    "low_information_threshold_ratio",
+    "low_information_weight",
+    "min_variance",
+)
 
 
 @dataclass(frozen=True)
@@ -145,6 +160,10 @@ class SpectralCalibrationResult:
         additive-noise estimates numerically indistinguishable from zero. With
         the softplus parameterization this should usually remain false, which is
         itself a useful boundary diagnostic.
+    solver_nonfinite_step_count:
+        Per-sensor count of Gauss-Newton updates whose sparse linear solve
+        returned non-finite values, forcing the fitter to reuse the previous
+        iterate for that sensor instead of accepting an unstable step.
     """
 
     sensor_ids: tuple[str, ...]
@@ -165,6 +184,7 @@ class SpectralCalibrationResult:
     low_information_mask: NDArray[np.bool_]
     gain_at_correction_bound_mask: NDArray[np.bool_]
     noise_zero_mask: NDArray[np.bool_]
+    solver_nonfinite_step_count: IndexArray
 
 
 @dataclass(frozen=True)
@@ -412,19 +432,52 @@ def load_calibration_dataset(
 def make_holdout_split(
     n_experiments: int,  # Number of aligned calibration experiments
     test_fraction: float = 0.2,  # Fraction held out for validation
+    strategy: str = "tail",  # Split policy: chronological tail or seeded random
+    random_seed: int | None = None,  # Optional seed for randomized splits
 ) -> tuple[IndexArray, IndexArray]:  # Train and test experiment indices
-    """Create a deterministic train/test split over entire experiments."""
+    """Create a train/test split over whole calibration experiments.
+
+    Parameters
+    ----------
+    n_experiments:
+        Number of aligned experiments available for calibration.
+    test_fraction:
+        Fraction of experiments reserved for hold-out diagnostics.
+    strategy:
+        Split policy. ``"tail"`` keeps the final block as hold-out, which is
+        useful when chronology matters. ``"random"`` draws a reproducible
+        experiment-level split when ``random_seed`` is provided.
+    random_seed:
+        Seed used only when ``strategy="random"``.
+    """
 
     if n_experiments < 2:
         raise ValueError("At least two experiments are required for a train/test split")
     if not (0.0 < test_fraction < 1.0):
         raise ValueError(f"test_fraction must lie in (0, 1), received {test_fraction}")
+    if strategy not in {"tail", "random"}:
+        raise ValueError(
+            f"strategy must be either 'tail' or 'random', received {strategy!r}."
+        )
 
     n_test = max(1, int(round(n_experiments * test_fraction)))
     n_test = min(n_test, n_experiments - 1)
-    test_start = n_experiments - n_test
-    train_indices = np.arange(0, test_start, dtype=np.int64)
-    test_indices = np.arange(test_start, n_experiments, dtype=np.int64)
+    all_indices = np.arange(n_experiments, dtype=np.int64)
+    if strategy == "tail":
+        test_start = n_experiments - n_test
+        train_indices = all_indices[:test_start]
+        test_indices = all_indices[test_start:]
+    else:
+        rng = np.random.default_rng(random_seed)
+        test_indices = np.sort(
+            np.asarray(
+                rng.choice(n_experiments, size=n_test, replace=False),
+                dtype=np.int64,
+            )
+        )
+        train_mask = np.ones(n_experiments, dtype=bool)
+        train_mask[test_indices] = False
+        train_indices = all_indices[train_mask]
     return train_indices, test_indices
 
 
@@ -466,13 +519,21 @@ def fit_spectral_calibration(
     - identifiability is enforced by requiring a unit geometric-mean gain at
       each frequency.
 
+    The optimizer remains an alternating fixed-iteration scheme rather than a
+    convergence-controlled trust-region method. The hardening in this module
+    focuses on making that approximation explicit and observable: frequency
+    spacing now enters the smoothness operator directly, train/test splits are
+    validated for disjointness and bounds, and failed sparse solves emit a
+    warning while recording how often the previous iterate had to be reused.
+
     Parameters
     ----------
     observations_power:
         Observed PSD tensor with shape ``(n_sensors, n_experiments, n_frequencies)``.
     frequency_hz:
-        Frequency-bin centers [Hz]. Only the length is used numerically, but the
-        array is kept for consistency and downstream plotting.
+        Strictly increasing frequency-bin centers [Hz]. The actual spacing is
+        used in the smoothness operator, so irregular grids keep their true
+        geometry instead of being treated like unit-spaced indices.
     sensor_ids:
         Ordered sensor identifiers matching the first axis of
         ``observations_power``.
@@ -531,6 +592,12 @@ def fit_spectral_calibration(
     -------
     SpectralCalibrationResult
         Estimated calibration parameters and latent spectra.
+
+    Warns
+    -----
+    RuntimeWarning
+        If one of the per-sensor sparse Gauss-Newton systems returns a
+        non-finite solution and the previous iterate must be reused.
     """
 
     observations_power = np.asarray(observations_power, dtype=np.float64)
@@ -542,8 +609,14 @@ def fit_spectral_calibration(
         raise ValueError(
             "sensor_ids length must match the first axis of observations_power"
         )
+    if len(set(sensor_ids)) != len(sensor_ids):
+        raise ValueError("sensor_ids must be unique")
     if frequency_hz.shape != (n_frequencies,):
         raise ValueError("frequency_hz must have shape (n_frequencies,)")
+    if not np.all(np.isfinite(frequency_hz)):
+        raise ValueError("frequency_hz contains non-finite values")
+    if np.any(np.diff(frequency_hz) <= 0.0):
+        raise ValueError("frequency_hz must be strictly increasing")
     if n_iterations < 1:
         raise ValueError("n_iterations must be at least 1")
     if lambda_gain_smooth < 0.0:
@@ -574,21 +647,11 @@ def fit_spectral_calibration(
         nominal_gain_power = np.clip(nominal_gain_power, _EPSILON, None)
         nominal_gain_power = _normalize_geometric_mean(nominal_gain_power)
 
-    if train_indices is None:
-        train_indices = np.arange(n_experiments, dtype=np.int64)
-    else:
-        train_indices = np.asarray(train_indices, dtype=np.int64)
-    if test_indices is None:
-        test_indices = np.setdiff1d(
-            np.arange(n_experiments, dtype=np.int64), train_indices
-        )
-    else:
-        test_indices = np.asarray(test_indices, dtype=np.int64)
-
-    if train_indices.size == 0:
-        raise ValueError("train_indices cannot be empty")
-    if np.unique(train_indices).size != train_indices.size:
-        raise ValueError("train_indices must be unique")
+    train_indices, test_indices = _resolve_experiment_split_indices(
+        n_experiments=n_experiments,
+        train_indices=train_indices,
+        test_indices=test_indices,
+    )
 
     reliable_sensor_index = _sensor_index(
         sensor_ids=sensor_ids, sensor_id=reliable_sensor_id
@@ -622,7 +685,7 @@ def fit_spectral_calibration(
     )
     residual_variance_power2 = np.maximum(np.mean(residuals**2, axis=1), min_variance)
 
-    second_difference = _second_difference_operator(n_frequencies)
+    second_difference = _second_difference_operator(frequency_hz)
     smooth_penalty = (second_difference.T @ second_difference).tocsc()
     correction_gain_power = np.exp(log_correction_gain)
     latent_variation_power2 = np.zeros(n_frequencies, dtype=np.float64)
@@ -632,10 +695,11 @@ def fit_spectral_calibration(
     low_information_mask = np.zeros((n_sensors, n_frequencies), dtype=bool)
     gain_at_correction_bound_mask = np.zeros((n_sensors, n_frequencies), dtype=bool)
     noise_zero_mask = np.zeros((n_sensors, n_frequencies), dtype=bool)
+    solver_nonfinite_step_count = np.zeros(n_sensors, dtype=np.int64)
 
     objective_history = []
 
-    for _ in range(n_iterations):
+    for iteration_index in range(n_iterations):
         weights = 1.0 / np.clip(residual_variance_power2, min_variance, None)
         weights[reliable_sensor_index] *= reliable_weight_boost
 
@@ -698,6 +762,7 @@ def fit_spectral_calibration(
                 log_correction_fit,
                 noise_parameter_fit,
                 sensor_gain_at_bound_mask,
+                reused_previous_iterate,
             ) = _fit_sensor_joint_curves(
                 latent_spectra_power=latent_spectra_power,
                 observations_power=train_observations[sensor_index],
@@ -715,6 +780,16 @@ def fit_spectral_calibration(
                 lambda_noise_reference=lambda_noise_reference,
                 max_log_correction=max_log_correction,
             )
+            if reused_previous_iterate:
+                solver_nonfinite_step_count[sensor_index] += 1
+                warnings.warn(
+                    "Sparse Gauss-Newton solve returned non-finite values for "
+                    f"sensor {sensor_ids[sensor_index]!r} at alternating "
+                    f"iteration {iteration_index + 1}; the previous iterate was "
+                    "reused for that sensor.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
             raw_log_correction[sensor_index] = log_correction_fit
             raw_noise_parameter[sensor_index] = noise_parameter_fit
             raw_gain_at_bound_mask[sensor_index] = sensor_gain_at_bound_mask
@@ -792,7 +867,45 @@ def fit_spectral_calibration(
         low_information_mask=low_information_mask,
         gain_at_correction_bound_mask=gain_at_correction_bound_mask,
         noise_zero_mask=noise_zero_mask,
+        solver_nonfinite_step_count=solver_nonfinite_step_count,
     )
+
+
+def resolve_spectral_fit_config(
+    fit_config: Mapping[str, int | float | None] | None = None,  # Optional overrides
+) -> dict[str, int | float | None]:  # Fully resolved fitter configuration
+    """Return the full fitter configuration after applying explicit overrides.
+
+    This helper makes artifact manifests audit-friendly by expanding partial
+    configuration dictionaries to the exact keyword arguments consumed by
+    :func:`fit_spectral_calibration`.
+    """
+
+    fit_config = {} if fit_config is None else dict(fit_config)
+    unknown_keys = sorted(set(fit_config) - set(_SPECTRAL_FIT_CONFIG_PARAMETER_NAMES))
+    if unknown_keys:
+        raise ValueError(
+            f"fit_config contains unsupported spectral fitter keys: {unknown_keys}."
+        )
+
+    signature = inspect.signature(fit_spectral_calibration)
+    resolved_fit_config: dict[str, int | float | None] = {}
+    for name in _SPECTRAL_FIT_CONFIG_PARAMETER_NAMES:
+        default_value = signature.parameters[name].default
+        raw_value = fit_config.get(name, default_value)
+        if raw_value is None:
+            if default_value is not None:
+                resolved_fit_config[name] = None
+            else:
+                resolved_fit_config[name] = None
+            continue
+        if isinstance(default_value, (int, np.integer)) and not isinstance(
+            default_value, bool
+        ):
+            resolved_fit_config[name] = int(raw_value)
+        else:
+            resolved_fit_config[name] = float(raw_value)
+    return resolved_fit_config
 
 
 def apply_deployed_calibration(
@@ -1080,6 +1193,81 @@ def _build_frequency_grid(
     return start_freq_hz + (np.arange(n_bins, dtype=np.float64) + 0.5) * bin_width_hz
 
 
+def _resolve_experiment_split_indices(
+    n_experiments: int,  # Total number of available experiments
+    train_indices: IndexArray | None,  # Requested training indices
+    test_indices: IndexArray | None,  # Requested held-out indices
+) -> tuple[IndexArray, IndexArray]:  # Validated train and test index arrays
+    """Resolve and validate the train/test experiment split.
+
+    The fitter accepts explicit train and test indices so notebook workflows
+    can control chronological or grouped validation. This helper keeps that
+    flexibility while enforcing the minimum contract required for trustworthy
+    diagnostics: both sets must be one-dimensional, in bounds, unique, and
+    mutually disjoint.
+    """
+
+    all_indices = np.arange(n_experiments, dtype=np.int64)
+    resolved_train_indices = (
+        all_indices
+        if train_indices is None
+        else np.asarray(train_indices, dtype=np.int64)
+    )
+    _validate_experiment_index_array(
+        indices=resolved_train_indices,
+        n_experiments=n_experiments,
+        name="train_indices",
+        allow_empty=False,
+    )
+
+    resolved_test_indices = (
+        np.setdiff1d(all_indices, resolved_train_indices, assume_unique=False)
+        if test_indices is None
+        else np.asarray(test_indices, dtype=np.int64)
+    )
+    _validate_experiment_index_array(
+        indices=resolved_test_indices,
+        n_experiments=n_experiments,
+        name="test_indices",
+        allow_empty=True,
+    )
+
+    overlapping_indices = np.intersect1d(
+        resolved_train_indices,
+        resolved_test_indices,
+        assume_unique=False,
+    )
+    if overlapping_indices.size != 0:
+        raise ValueError(
+            "train_indices and test_indices must be disjoint, but overlap at "
+            f"{overlapping_indices.tolist()}."
+        )
+    return resolved_train_indices, resolved_test_indices
+
+
+def _validate_experiment_index_array(
+    indices: IndexArray,  # Candidate experiment indices
+    n_experiments: int,  # Exclusive upper bound on valid indices
+    name: str,  # Human-readable array name for error messages
+    allow_empty: bool,  # Whether zero-length arrays are acceptable
+) -> None:  # Raises if the index array breaks the split contract
+    """Validate one train/test index array against the experiment count."""
+
+    if indices.ndim != 1:
+        raise ValueError(f"{name} must be one-dimensional")
+    if not allow_empty and indices.size == 0:
+        raise ValueError(f"{name} cannot be empty")
+    if np.unique(indices).size != indices.size:
+        raise ValueError(f"{name} must be unique")
+    if indices.size == 0:
+        return
+    if int(np.min(indices)) < 0 or int(np.max(indices)) >= n_experiments:
+        raise ValueError(
+            f"{name} must lie within [0, {n_experiments - 1}], received "
+            f"{indices.tolist()}."
+        )
+
+
 def _fit_sensor_joint_curves(
     latent_spectra_power: FloatArray,  # Latent spectra with shape (experiments, frequencies)
     observations_power: FloatArray,  # Sensor observations with shape (experiments, frequencies)
@@ -1098,8 +1286,8 @@ def _fit_sensor_joint_curves(
     max_log_correction: float
     | None,  # Optional symmetric log bound on the residual gain correction
 ) -> tuple[
-    FloatArray, FloatArray, NDArray[np.bool_]
-]:  # Updated log-gain correction, noise parameter, and cap mask for one sensor
+    FloatArray, FloatArray, NDArray[np.bool_], bool
+]:  # Updated log-gain correction, noise parameter, cap mask, and fallback flag
     """Solve one conservative frequency-coupled gain/noise update for a sensor.
 
     The state is nonlinear in both the multiplicative gain and the positive
@@ -1165,6 +1353,7 @@ def _fit_sensor_joint_curves(
             log_correction_linearization.copy(),
             noise_parameter_linearization.copy(),
             empty_mask,
+            True,
         )
 
     delta_log_correction = np.asarray(solution[:n_frequencies], dtype=np.float64)
@@ -1184,7 +1373,7 @@ def _fit_sensor_joint_curves(
             rtol=0.0,
             atol=1.0e-8,
         )
-    return log_correction, noise_parameter, gain_at_bound_mask
+    return log_correction, noise_parameter, gain_at_bound_mask, False
 
 
 def _frequency_information_weights(
@@ -1319,21 +1508,54 @@ def _sensor_information_weights(
 
 
 def _second_difference_operator(
-    n_frequencies: int,  # Length of the frequency grid
+    frequency_hz: FloatArray,  # Strictly increasing frequency grid [Hz]
 ) -> sparse.csc_matrix:  # Sparse finite-difference matrix
-    """Build the second-order finite-difference operator used for smoothing."""
+    """Build a curvature operator that respects non-uniform frequency spacing.
 
+    The operator is built on a frequency axis normalized by the median bin
+    spacing. That keeps the smoothness hyperparameters on roughly the same
+    scale as the original unit-grid implementation while still respecting
+    irregular spacing when the acquisition grid is not uniform.
+    """
+
+    frequency_hz = np.asarray(frequency_hz, dtype=np.float64)
+    n_frequencies = frequency_hz.size
     if n_frequencies < 3:
         return sparse.csc_matrix((0, n_frequencies))
-    return sparse.diags(
-        diagonals=[
-            np.ones(n_frequencies - 2, dtype=np.float64),
-            -2.0 * np.ones(n_frequencies - 2, dtype=np.float64),
-            np.ones(n_frequencies - 2, dtype=np.float64),
-        ],
-        offsets=[0, 1, 2],
+
+    spacing_hz = np.diff(frequency_hz)
+    median_spacing_hz = float(np.median(spacing_hz))
+    normalized_frequency = np.concatenate(
+        [
+            np.asarray([0.0], dtype=np.float64),
+            np.cumsum(spacing_hz / median_spacing_hz),
+        ]
+    )
+
+    row_indices: list[int] = []
+    column_indices: list[int] = []
+    values: list[float] = []
+    for left_index in range(n_frequencies - 2):
+        spacing_left = float(
+            normalized_frequency[left_index + 1] - normalized_frequency[left_index]
+        )
+        spacing_right = float(
+            normalized_frequency[left_index + 2] - normalized_frequency[left_index + 1]
+        )
+        denominator = spacing_left + spacing_right
+        row_coefficients = (
+            2.0 / (spacing_left * denominator),
+            -2.0 / (spacing_left * spacing_right),
+            2.0 / (spacing_right * denominator),
+        )
+        for offset, coefficient in enumerate(row_coefficients):
+            row_indices.append(left_index)
+            column_indices.append(left_index + offset)
+            values.append(coefficient)
+
+    return sparse.csc_matrix(
+        (values, (row_indices, column_indices)),
         shape=(n_frequencies - 2, n_frequencies),
-        format="csc",
     )
 
 

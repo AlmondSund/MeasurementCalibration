@@ -37,6 +37,7 @@ from .spectral_calibration import (
     make_holdout_split,
     power_db_to_linear,
     power_linear_to_db,
+    resolve_spectral_fit_config,
 )
 
 __all__ = [
@@ -69,6 +70,7 @@ __all__ = [
     "power_db_to_linear",
     "power_linear_to_db",
     "prepare_rbw_calibration_dataset",
+    "resolve_spectral_fit_config",
     "resolve_rbw_excluded_sensor_ids",
     "save_spectral_calibration_artifact",
     "write_sensor_calibration_summary_csv",

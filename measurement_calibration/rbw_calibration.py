@@ -19,6 +19,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 import time
+from typing import cast
 
 import numpy as np
 
@@ -41,6 +42,7 @@ from .spectral_calibration import (
     make_holdout_split,
     power_db_to_linear,
     power_linear_to_db,
+    resolve_spectral_fit_config,
 )
 
 
@@ -492,7 +494,7 @@ def evaluate_rbw_calibration_holdout(
     The returned summary is intentionally small but decision-oriented:
 
     - overall raw versus corrected dispersion,
-    - per-sensor RMSE and bias to the corrected consensus, and
+    - per-sensor RMSE and bias to a leave-one-sensor-out corrected consensus, and
     - the fraction of bins where the deployed correction is forced to clip
       because the fitted additive noise exceeds the observed power.
 
@@ -518,15 +520,9 @@ def evaluate_rbw_calibration_holdout(
         gain_power=result.gain_power,
         additive_noise_power=result.additive_noise_power,
     )
-    consensus_test_power = compute_network_consensus(
-        corrected_power=corrected_test_power,
-        residual_variance_power2=result.residual_variance_power2,
-    )
 
     raw_test_db = power_linear_to_db(raw_test_power)
     corrected_test_db = power_linear_to_db(corrected_test_power)
-    consensus_test_db = power_linear_to_db(consensus_test_power)
-    corrected_residual_db = corrected_test_db - consensus_test_db[np.newaxis, :, :]
     invalid_corrected_mask = (
         raw_test_power <= result.additive_noise_power[:, np.newaxis, :]
     )
@@ -534,33 +530,44 @@ def evaluate_rbw_calibration_holdout(
     # The per-sensor rows expose enough information to diagnose whether a
     # sensor is unstable because of timing mismatch, low information, gain
     # saturation, or invalid deployed corrections.
-    sensor_rows = tuple(
-        RbwSensorValidationSummary(
-            sensor_id=sensor_id,
-            mean_bias_to_consensus_db=float(
-                np.mean(corrected_residual_db[sensor_index])
-            ),
-            rmse_to_consensus_db=float(
-                np.sqrt(np.mean(corrected_residual_db[sensor_index] ** 2))
-            ),
-            invalid_corrected_fraction=float(
-                np.mean(invalid_corrected_mask[sensor_index])
-            ),
-            median_information_weight=float(
-                np.median(result.information_weight[sensor_index])
-            ),
-            low_information_fraction=float(
-                np.mean(result.low_information_mask[sensor_index])
-            ),
-            gain_cap_fraction=float(
-                np.mean(result.gain_at_correction_bound_mask[sensor_index])
-            ),
-            alignment_median_error_ms=float(
-                dataset.alignment_median_error_ms[sensor_id]
-            ),
+    sensor_rows: list[RbwSensorValidationSummary] = []
+    retained_sensor_indices = np.arange(len(result.sensor_ids), dtype=np.int64)
+    for sensor_index, sensor_id in enumerate(result.sensor_ids):
+        other_sensor_indices = retained_sensor_indices[
+            retained_sensor_indices != sensor_index
+        ]
+        leave_one_out_consensus_power = compute_network_consensus(
+            corrected_power=corrected_test_power[other_sensor_indices],
+            residual_variance_power2=result.residual_variance_power2[
+                other_sensor_indices
+            ],
         )
-        for sensor_index, sensor_id in enumerate(result.sensor_ids)
-    )
+        leave_one_out_consensus_db = power_linear_to_db(leave_one_out_consensus_power)
+        corrected_residual_db = (
+            corrected_test_db[sensor_index] - leave_one_out_consensus_db
+        )
+        sensor_rows.append(
+            RbwSensorValidationSummary(
+                sensor_id=sensor_id,
+                mean_bias_to_consensus_db=float(np.mean(corrected_residual_db)),
+                rmse_to_consensus_db=float(np.sqrt(np.mean(corrected_residual_db**2))),
+                invalid_corrected_fraction=float(
+                    np.mean(invalid_corrected_mask[sensor_index])
+                ),
+                median_information_weight=float(
+                    np.median(result.information_weight[sensor_index])
+                ),
+                low_information_fraction=float(
+                    np.mean(result.low_information_mask[sensor_index])
+                ),
+                gain_cap_fraction=float(
+                    np.mean(result.gain_at_correction_bound_mask[sensor_index])
+                ),
+                alignment_median_error_ms=float(
+                    dataset.alignment_median_error_ms[sensor_id]
+                ),
+            )
+        )
 
     raw_mean_sensor_std_db = float(np.mean(np.std(raw_test_db, axis=0)))
     corrected_mean_sensor_std_db = float(np.mean(np.std(corrected_test_db, axis=0)))
@@ -573,7 +580,7 @@ def evaluate_rbw_calibration_holdout(
         raw_mean_sensor_std_db=raw_mean_sensor_std_db,
         corrected_mean_sensor_std_db=corrected_mean_sensor_std_db,
         corrected_to_raw_dispersion_ratio=corrected_to_raw_dispersion_ratio,
-        sensor_rows=sensor_rows,
+        sensor_rows=tuple(sensor_rows),
     )
 
 
@@ -730,6 +737,8 @@ def fit_and_save_rbw_calibration_model(
     acquisition_dir: Path,  # Source RBW acquisition directory for this subset
     fit_config: Mapping[str, int | float],  # Numerical fitting configuration
     test_fraction: float = 0.2,  # Fraction of records reserved for hold-out validation
+    split_strategy: str = "tail",  # Hold-out policy forwarded to make_holdout_split
+    split_random_seed: int | None = None,  # Optional seed for randomized hold-out
     auto_retrain_after_qc: bool = True,  # Whether to rerun after dropping QC outliers
     invalid_corrected_fraction_threshold: float = DEFAULT_RBW_INVALID_CORRECTED_FRACTION_THRESHOLD,
     rmse_outlier_iqr_multiplier: float = DEFAULT_RBW_RMSE_OUTLIER_IQR_MULTIPLIER,
@@ -757,6 +766,11 @@ def fit_and_save_rbw_calibration_model(
         :func:`fit_spectral_calibration`.
     test_fraction:
         Fraction of RBW records reserved for hold-out diagnostics.
+    split_strategy:
+        Hold-out split policy. Use ``"random"`` with a fixed seed to avoid a
+        chronology-biased trailing block when campaign order is not meaningful.
+    split_random_seed:
+        Optional seed used when ``split_strategy="random"``.
     auto_retrain_after_qc:
         Whether to drop clear hold-out QC failures and refit.
     invalid_corrected_fraction_threshold, rmse_outlier_iqr_multiplier, min_rmse_excess_db:
@@ -778,6 +792,7 @@ def fit_and_save_rbw_calibration_model(
     """
 
     current_preparation = preparation
+    resolved_fit_config = resolve_spectral_fit_config(fit_config)
     total_fit_duration_s = 0.0
     qc_auto_excluded_sensor_ids: list[str] = []
     n_fit_passes = 0
@@ -788,8 +803,10 @@ def fit_and_save_rbw_calibration_model(
         n_fit_passes += 1
         result, validation, fit_duration_s = _fit_rbw_model_once(
             preparation=current_preparation,
-            fit_config=fit_config,
+            fit_config=resolved_fit_config,
             test_fraction=test_fraction,
+            split_strategy=split_strategy,
+            split_random_seed=split_random_seed,
         )
         total_fit_duration_s += fit_duration_s
 
@@ -843,7 +860,7 @@ def fit_and_save_rbw_calibration_model(
         reference_sensor_id=current_preparation.reliable_sensor_id,
         reliable_sensor_id=current_preparation.reliable_sensor_id,
         excluded_sensor_ids=current_preparation.excluded_sensor_ids,
-        fit_config=fit_config,
+        fit_config=resolved_fit_config,
         extra_summary={
             "fit_duration_s": total_fit_duration_s,
             "test_fraction": float(test_fraction),
@@ -892,8 +909,12 @@ def fit_and_save_rbw_calibration_model(
 
 def _fit_rbw_model_once(
     preparation: RbwCalibrationPreparation,  # RBW preparation for one fit pass
-    fit_config: Mapping[str, int | float],  # Numerical fitting configuration
+    fit_config: Mapping[
+        str, int | float | None
+    ],  # Fully resolved numerical fitting configuration
     test_fraction: float,  # Fraction of records reserved for hold-out diagnostics
+    split_strategy: str,  # Hold-out policy forwarded to make_holdout_split
+    split_random_seed: int | None,  # Optional seed for randomized hold-out
 ) -> tuple[
     SpectralCalibrationResult,
     RbwCalibrationValidationSummary,
@@ -905,6 +926,8 @@ def _fit_rbw_model_once(
     train_indices, test_indices = make_holdout_split(
         n_experiments=dataset.observations_power.shape[1],
         test_fraction=test_fraction,
+        strategy=split_strategy,
+        random_seed=split_random_seed,
     )
 
     start_time = time.perf_counter()
@@ -916,17 +939,19 @@ def _fit_rbw_model_once(
         train_indices=train_indices,
         test_indices=test_indices,
         reliable_sensor_id=preparation.reliable_sensor_id,
-        n_iterations=int(fit_config["n_iterations"]),
-        lambda_gain_smooth=float(fit_config["lambda_gain_smooth"]),
-        lambda_noise_smooth=float(fit_config["lambda_noise_smooth"]),
-        lambda_gain_reference=float(fit_config["lambda_gain_reference"]),
-        lambda_noise_reference=float(fit_config["lambda_noise_reference"]),
-        lambda_reliable_anchor=float(fit_config["lambda_reliable_anchor"]),
-        reliable_weight_boost=float(fit_config["reliable_weight_boost"]),
+        n_iterations=int(cast(int, fit_config["n_iterations"])),
+        lambda_gain_smooth=float(cast(float, fit_config["lambda_gain_smooth"])),
+        lambda_noise_smooth=float(cast(float, fit_config["lambda_noise_smooth"])),
+        lambda_gain_reference=float(cast(float, fit_config["lambda_gain_reference"])),
+        lambda_noise_reference=float(cast(float, fit_config["lambda_noise_reference"])),
+        lambda_reliable_anchor=float(cast(float, fit_config["lambda_reliable_anchor"])),
+        reliable_weight_boost=float(cast(float, fit_config["reliable_weight_boost"])),
+        max_correction_db=cast(float | None, fit_config["max_correction_db"]),
         low_information_threshold_ratio=float(
-            fit_config["low_information_threshold_ratio"]
+            cast(float, fit_config["low_information_threshold_ratio"])
         ),
-        low_information_weight=float(fit_config["low_information_weight"]),
+        low_information_weight=float(cast(float, fit_config["low_information_weight"])),
+        min_variance=float(cast(float, fit_config["min_variance"])),
     )
     fit_duration_s = time.perf_counter() - start_time
     validation = evaluate_rbw_calibration_holdout(preparation, result)

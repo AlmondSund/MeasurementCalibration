@@ -91,7 +91,9 @@ def save_spectral_calibration_artifact(
     reference_sensor_id: str,  # Alignment reference sensor
     reliable_sensor_id: str,  # Softly anchored sensor during fitting
     excluded_sensor_ids: Collection[str],  # Sensors removed before training
-    fit_config: Mapping[str, int | float],  # Numerical fitting configuration
+    fit_config: Mapping[
+        str, int | float | None
+    ],  # Fully resolved fitting configuration
     extra_summary: Mapping[str, int | float] | None = None,  # Optional run metrics
 ) -> SavedCalibrationArtifact:  # Paths and manifest for the stored artifact
     """Persist a fitted calibration result as a self-describing artifact bundle.
@@ -118,8 +120,9 @@ def save_spectral_calibration_artifact(
     excluded_sensor_ids:
         Sensors excluded before dataset construction.
     fit_config:
-        Numerical fit configuration. Only JSON-serializable scalars are
-        accepted so the manifest remains explicit and portable.
+        Fully resolved numerical fit configuration used to generate ``result``.
+        Persisting the complete effective configuration keeps audit-critical
+        behavior out of hidden function defaults.
     extra_summary:
         Optional scalar run metrics, for example fit duration or holdout
         fraction, that should appear in the manifest summary.
@@ -163,6 +166,7 @@ def save_spectral_calibration_artifact(
         low_information_mask=result.low_information_mask,
         gain_at_correction_bound_mask=result.gain_at_correction_bound_mask,
         noise_zero_mask=result.noise_zero_mask,
+        solver_nonfinite_step_count=result.solver_nonfinite_step_count,
     )
 
     write_sensor_calibration_summary_csv(sensor_summary_path, result)
@@ -276,6 +280,12 @@ def load_spectral_calibration_artifact(
                 arrays["gain_at_correction_bound_mask"], dtype=bool
             ),
             noise_zero_mask=np.asarray(arrays["noise_zero_mask"], dtype=bool),
+            solver_nonfinite_step_count=np.asarray(
+                arrays["solver_nonfinite_step_count"]
+                if "solver_nonfinite_step_count" in arrays
+                else np.zeros(len(arrays["sensor_ids"]), dtype=np.int64),
+                dtype=np.int64,
+            ),
         )
 
     sensor_summary_path = output_dir / str(manifest["sensor_summary_file"])
@@ -316,7 +326,7 @@ def _build_artifact_manifest(
     reference_sensor_id: str,
     reliable_sensor_id: str,
     excluded_sensor_ids: Collection[str],
-    fit_config: Mapping[str, int | float],
+    fit_config: Mapping[str, int | float | None],
     parameters_path: str,
     sensor_summary_path: str,
     extra_summary: Mapping[str, int | float] | None,
@@ -339,6 +349,10 @@ def _build_artifact_manifest(
             str(sensor_id) for sensor_id in excluded_sensor_ids
         ),
         "fit_config": _normalize_scalar_mapping(fit_config),
+        "fit_split": {
+            "train_indices": [int(index) for index in result.train_indices],
+            "test_indices": [int(index) for index in result.test_indices],
+        },
         "dataset": {
             "sensor_ids": list(dataset.sensor_ids),
             "n_sensors": len(dataset.sensor_ids),
@@ -373,19 +387,22 @@ def _build_artifact_manifest(
 
 
 def _normalize_scalar_mapping(
-    values: Mapping[str, int | float],  # Mapping with NumPy or Python scalars
-) -> dict[str, int | float]:
+    values: Mapping[str, int | float | None],  # Mapping with NumPy or Python scalars
+) -> dict[str, int | float | None]:
     """Convert a scalar mapping into a JSON-friendly plain-Python dictionary."""
 
-    normalized: dict[str, int | float] = {}
+    normalized: dict[str, int | float | None] = {}
     for key, value in values.items():
-        if isinstance(value, (np.integer, int)) and not isinstance(value, bool):
+        if value is None:
+            normalized[key] = None
+        elif isinstance(value, (np.integer, int)) and not isinstance(value, bool):
             normalized[key] = int(value)
         elif isinstance(value, (np.floating, float)):
             normalized[key] = float(value)
         else:
             raise TypeError(
-                "Artifact manifest supports only integer and floating-point "
+                "Artifact manifest supports only integer, floating-point, and "
+                "null "
                 f"scalars, but {key!r} received {type(value).__name__}."
             )
     return normalized
@@ -407,6 +424,7 @@ def _result_summary(
         "sensor_low_information_fraction": float(np.mean(result.low_information_mask)),
         "gain_cap_fraction": float(np.mean(result.gain_at_correction_bound_mask)),
         "noise_zero_fraction": float(np.mean(result.noise_zero_mask)),
+        "solver_nonfinite_step_count": int(np.sum(result.solver_nonfinite_step_count)),
     }
 
 
@@ -448,6 +466,9 @@ def _build_sensor_summary_rows(
                 ),
                 "noise_zero_fraction": float(
                     np.mean(result.noise_zero_mask[sensor_index])
+                ),
+                "solver_nonfinite_step_count": int(
+                    result.solver_nonfinite_step_count[sensor_index]
                 ),
             }
         )

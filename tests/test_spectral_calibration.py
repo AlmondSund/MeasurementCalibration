@@ -7,12 +7,14 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from measurement_calibration.spectral_calibration import (
     apply_deployed_calibration,
     compute_network_consensus,
     fit_spectral_calibration,
     load_calibration_dataset,
+    make_holdout_split,
     power_db_to_linear,
     power_linear_to_db,
 )
@@ -370,6 +372,107 @@ def test_fit_spectral_calibration_reports_gain_cap_hits() -> None:
         np.max(np.abs(np.log(result.correction_gain_power)))
         <= max_log_correction + 1.0e-8
     )
+
+
+def test_fit_spectral_calibration_validates_train_and_test_indices() -> None:
+    """Explicit train/test splits must be unique, in-bounds, and disjoint."""
+
+    observations = np.full((2, 4, 3), 1.0, dtype=np.float64)
+    frequency_hz = np.asarray([100.0, 101.5, 103.0], dtype=np.float64)
+    sensor_ids = ("Node1", "Node2")
+
+    with pytest.raises(ValueError, match="disjoint"):
+        fit_spectral_calibration(
+            observations_power=observations,
+            frequency_hz=frequency_hz,
+            sensor_ids=sensor_ids,
+            train_indices=np.asarray([0, 1], dtype=np.int64),
+            test_indices=np.asarray([1, 2], dtype=np.int64),
+            reliable_sensor_id="Node1",
+        )
+
+    with pytest.raises(ValueError, match="test_indices must be unique"):
+        fit_spectral_calibration(
+            observations_power=observations,
+            frequency_hz=frequency_hz,
+            sensor_ids=sensor_ids,
+            train_indices=np.asarray([0, 1], dtype=np.int64),
+            test_indices=np.asarray([2, 2], dtype=np.int64),
+            reliable_sensor_id="Node1",
+        )
+
+    with pytest.raises(ValueError, match="test_indices must lie within"):
+        fit_spectral_calibration(
+            observations_power=observations,
+            frequency_hz=frequency_hz,
+            sensor_ids=sensor_ids,
+            train_indices=np.asarray([0, 1], dtype=np.int64),
+            test_indices=np.asarray([4], dtype=np.int64),
+            reliable_sensor_id="Node1",
+        )
+
+    with pytest.raises(ValueError, match="strictly increasing"):
+        fit_spectral_calibration(
+            observations_power=observations,
+            frequency_hz=np.asarray([100.0, 100.5, 100.5], dtype=np.float64),
+            sensor_ids=sensor_ids,
+            reliable_sensor_id="Node1",
+        )
+
+
+def test_make_holdout_split_random_is_reproducible_and_disjoint() -> None:
+    """Random hold-out splits should remain deterministic under a fixed seed."""
+
+    train_indices_a, test_indices_a = make_holdout_split(
+        n_experiments=10,
+        test_fraction=0.3,
+        strategy="random",
+        random_seed=17,
+    )
+    train_indices_b, test_indices_b = make_holdout_split(
+        n_experiments=10,
+        test_fraction=0.3,
+        strategy="random",
+        random_seed=17,
+    )
+
+    assert np.array_equal(train_indices_a, train_indices_b)
+    assert np.array_equal(test_indices_a, test_indices_b)
+    assert np.intersect1d(train_indices_a, test_indices_a).size == 0
+    assert train_indices_a.size + test_indices_a.size == 10
+
+
+def test_fit_spectral_calibration_warns_and_counts_nonfinite_solver_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-finite sparse solves should warn and record the fallback count."""
+
+    observations = np.full((2, 4, 5), 1.0, dtype=np.float64)
+    frequency_hz = np.linspace(100.0, 104.0, observations.shape[2])
+    sensor_ids = ("Node1", "Node2")
+
+    def _return_nan_solution(*_args: object, **_kwargs: object) -> np.ndarray:
+        """Return a non-finite sparse-solver output for every requested system."""
+
+        return np.full(observations.shape[2] * 2, np.nan, dtype=np.float64)
+
+    monkeypatch.setattr(
+        "measurement_calibration.spectral_calibration.spsolve",
+        _return_nan_solution,
+    )
+
+    with pytest.warns(RuntimeWarning, match="non-finite"):
+        result = fit_spectral_calibration(
+            observations_power=observations,
+            frequency_hz=frequency_hz,
+            sensor_ids=sensor_ids,
+            reliable_sensor_id="Node1",
+            n_iterations=2,
+        )
+
+    assert np.array_equal(result.solver_nonfinite_step_count, np.asarray([2, 2]))
+    assert np.allclose(result.correction_gain_power, 1.0)
+    assert np.all(result.additive_noise_power > 0.0)
 
 
 def test_apply_deployed_calibration_and_consensus_shapes() -> None:

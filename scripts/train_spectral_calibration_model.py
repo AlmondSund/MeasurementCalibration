@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 import sys
 import time
+from typing import cast
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +23,7 @@ from measurement_calibration.spectral_calibration import (  # noqa: E402
     fit_spectral_calibration,
     load_calibration_dataset,
     make_holdout_split,
+    resolve_spectral_fit_config,
 )
 
 
@@ -97,6 +99,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=0.2,
         help="Fraction of aligned experiments reserved for holdout diagnostics.",
     )
+    parser.add_argument(
+        "--split-strategy",
+        choices=("tail", "random"),
+        default="random",
+        help="Hold-out split policy. Use random for drift-robust validation.",
+    )
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=0,
+        help="Seed used when --split-strategy=random.",
+    )
     return parser
 
 
@@ -105,6 +119,7 @@ def main() -> int:
 
     args = build_argument_parser().parse_args()
     excluded_sensor_ids = tuple(sorted(set(args.exclude_sensor_id)))
+    resolved_fit_config = resolve_spectral_fit_config(DEFAULT_FIT_CONFIG)
 
     dataset = load_calibration_dataset(
         acquisition_dir=args.acquisition_dir,
@@ -115,6 +130,8 @@ def main() -> int:
     train_indices, test_indices = make_holdout_split(
         n_experiments=dataset.observations_power.shape[1],
         test_fraction=args.test_fraction,
+        strategy=args.split_strategy,
+        random_seed=args.split_seed,
     )
 
     start_time = time.perf_counter()
@@ -126,17 +143,33 @@ def main() -> int:
         train_indices=train_indices,
         test_indices=test_indices,
         reliable_sensor_id=args.reliable_sensor_id,
-        n_iterations=int(DEFAULT_FIT_CONFIG["n_iterations"]),
-        lambda_gain_smooth=float(DEFAULT_FIT_CONFIG["lambda_gain_smooth"]),
-        lambda_noise_smooth=float(DEFAULT_FIT_CONFIG["lambda_noise_smooth"]),
-        lambda_gain_reference=float(DEFAULT_FIT_CONFIG["lambda_gain_reference"]),
-        lambda_noise_reference=float(DEFAULT_FIT_CONFIG["lambda_noise_reference"]),
-        lambda_reliable_anchor=float(DEFAULT_FIT_CONFIG["lambda_reliable_anchor"]),
-        reliable_weight_boost=float(DEFAULT_FIT_CONFIG["reliable_weight_boost"]),
-        low_information_threshold_ratio=float(
-            DEFAULT_FIT_CONFIG["low_information_threshold_ratio"]
+        n_iterations=int(cast(int, resolved_fit_config["n_iterations"])),
+        lambda_gain_smooth=float(
+            cast(float, resolved_fit_config["lambda_gain_smooth"])
         ),
-        low_information_weight=float(DEFAULT_FIT_CONFIG["low_information_weight"]),
+        lambda_noise_smooth=float(
+            cast(float, resolved_fit_config["lambda_noise_smooth"])
+        ),
+        lambda_gain_reference=float(
+            cast(float, resolved_fit_config["lambda_gain_reference"])
+        ),
+        lambda_noise_reference=float(
+            cast(float, resolved_fit_config["lambda_noise_reference"])
+        ),
+        lambda_reliable_anchor=float(
+            cast(float, resolved_fit_config["lambda_reliable_anchor"])
+        ),
+        reliable_weight_boost=float(
+            cast(float, resolved_fit_config["reliable_weight_boost"])
+        ),
+        max_correction_db=cast(float | None, resolved_fit_config["max_correction_db"]),
+        low_information_threshold_ratio=float(
+            cast(float, resolved_fit_config["low_information_threshold_ratio"])
+        ),
+        low_information_weight=float(
+            cast(float, resolved_fit_config["low_information_weight"])
+        ),
+        min_variance=float(cast(float, resolved_fit_config["min_variance"])),
     )
     fit_duration_s = time.perf_counter() - start_time
 
@@ -149,7 +182,7 @@ def main() -> int:
         reference_sensor_id=args.reference_sensor_id,
         reliable_sensor_id=args.reliable_sensor_id,
         excluded_sensor_ids=excluded_sensor_ids,
-        fit_config=DEFAULT_FIT_CONFIG,
+        fit_config=resolved_fit_config,
         extra_summary={
             "fit_duration_s": fit_duration_s,
             "test_fraction": args.test_fraction,

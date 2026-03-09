@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from measurement_calibration.artifacts import load_spectral_calibration_artifact
 from measurement_calibration.rbw_calibration import (
@@ -12,6 +13,7 @@ from measurement_calibration.rbw_calibration import (
     RbwSensorValidationSummary,
     _select_reliable_sensor_id,
     _select_rbw_qc_retrain_sensor_ids,
+    evaluate_rbw_calibration_holdout,
     fit_and_save_rbw_calibration_model,
     identify_rbw_qc_outlier_sensor_ids,
     prepare_rbw_calibration_dataset,
@@ -20,7 +22,12 @@ from measurement_calibration.sensor_ranking import (
     RbwAcquisitionDataset,
     SensorRankingResult,
 )
-from measurement_calibration.spectral_calibration import power_db_to_linear
+from measurement_calibration.spectral_calibration import (
+    SpectralCalibrationResult,
+    compute_network_consensus,
+    power_db_to_linear,
+    power_linear_to_db,
+)
 
 
 def test_prepare_rbw_calibration_dataset_excludes_node9_and_converts_to_linear() -> (
@@ -158,10 +165,72 @@ def test_fit_and_save_rbw_calibration_model_writes_manifest_without_response_dir
     assert loaded.manifest["dataset"]["sensor_ids"] == list(
         preparation.calibration_dataset.sensor_ids
     )
+    assert loaded.manifest["fit_config"]["max_correction_db"] == 12.0
+    assert loaded.manifest["fit_config"]["min_variance"] == 1.0e-14
     assert loaded.manifest["extra_summary"]["corrected_to_raw_dispersion_ratio"] > 0.0
     assert np.isfinite(fit_result.corrected_to_raw_dispersion_ratio)
     assert fit_result.corrected_mean_sensor_std_db > 0.0
     assert fit_result.raw_mean_sensor_std_db > 0.0
+
+
+def test_evaluate_rbw_calibration_holdout_uses_leave_one_out_consensus() -> None:
+    """Per-sensor RBW QC should compare against leave-one-sensor-out consensus."""
+
+    preparation = prepare_rbw_calibration_dataset(
+        _synthetic_rbw_dataset(),
+        excluded_sensor_ids_by_label={},
+    )
+    dataset = preparation.calibration_dataset
+    train_indices = np.asarray([0, 1], dtype=np.int64)
+    test_indices = np.asarray([2, 3, 4], dtype=np.int64)
+    n_sensors = len(dataset.sensor_ids)
+    n_frequencies = dataset.frequency_hz.size
+
+    result = SpectralCalibrationResult(
+        sensor_ids=dataset.sensor_ids,
+        frequency_hz=dataset.frequency_hz,
+        gain_power=np.ones((n_sensors, n_frequencies), dtype=np.float64),
+        additive_noise_power=np.zeros((n_sensors, n_frequencies), dtype=np.float64),
+        residual_variance_power2=np.ones((n_sensors, n_frequencies), dtype=np.float64),
+        latent_spectra_power=np.mean(
+            dataset.observations_power[:, train_indices, :],
+            axis=0,
+        ),
+        nominal_gain_power=np.ones((n_sensors, n_frequencies), dtype=np.float64),
+        correction_gain_power=np.ones((n_sensors, n_frequencies), dtype=np.float64),
+        train_indices=train_indices,
+        test_indices=test_indices,
+        objective_history=np.asarray([1.0], dtype=np.float64),
+        latent_variation_power2=np.var(
+            dataset.observations_power[:, train_indices, :],
+            axis=1,
+        ).mean(axis=0),
+        frequency_information_weight=np.ones(n_frequencies, dtype=np.float64),
+        information_weight=np.ones((n_sensors, n_frequencies), dtype=np.float64),
+        frequency_low_information_mask=np.zeros(n_frequencies, dtype=bool),
+        low_information_mask=np.zeros((n_sensors, n_frequencies), dtype=bool),
+        gain_at_correction_bound_mask=np.zeros((n_sensors, n_frequencies), dtype=bool),
+        noise_zero_mask=np.zeros((n_sensors, n_frequencies), dtype=bool),
+        solver_nonfinite_step_count=np.zeros(n_sensors, dtype=np.int64),
+    )
+
+    validation = evaluate_rbw_calibration_holdout(preparation, result)
+    raw_test_power = dataset.observations_power[:, test_indices, :]
+    for sensor_index, row in enumerate(validation.sensor_rows):
+        other_sensor_mask = np.arange(n_sensors) != sensor_index
+        leave_one_out_consensus_power = compute_network_consensus(
+            corrected_power=raw_test_power[other_sensor_mask],
+            residual_variance_power2=result.residual_variance_power2[other_sensor_mask],
+        )
+        expected_residual_db = power_linear_to_db(
+            raw_test_power[sensor_index]
+        ) - power_linear_to_db(leave_one_out_consensus_power)
+        assert row.rmse_to_consensus_db == pytest.approx(
+            float(np.sqrt(np.mean(expected_residual_db**2)))
+        )
+        assert row.mean_bias_to_consensus_db == pytest.approx(
+            float(np.mean(expected_residual_db))
+        )
 
 
 def test_identify_rbw_qc_outlier_sensor_ids_flags_invalid_or_high_rmse_sensors() -> (

@@ -90,6 +90,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Fraction of RBW records reserved for hold-out diagnostics.",
     )
     parser.add_argument(
+        "--split-strategy",
+        choices=("tail", "random"),
+        default="random",
+        help="Hold-out split policy. Use random to reduce campaign-order bias.",
+    )
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=0,
+        help="Seed used when --split-strategy=random.",
+    )
+    parser.add_argument(
         "--ranking-histogram-bins",
         type=int,
         default=50,
@@ -166,6 +178,8 @@ def main() -> int:
             acquisition_dir=args.rbw_root_dir / rbw_label,
             fit_config=DEFAULT_FIT_CONFIG,
             test_fraction=float(args.test_fraction),
+            split_strategy=args.split_strategy,
+            split_random_seed=args.split_seed,
         )
         print(
             "saved_rbw="
