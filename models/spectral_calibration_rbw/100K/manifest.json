@@ -1,0 +1,82 @@
+{
+  "acquisition_dir": "/home/marti/Code/MeasurementCalibration/data/RBW_acquisitions/100K",
+  "artifact_type": "spectral_calibration_model",
+  "created_at_utc": "2026-03-09T17:18:41.914378+00:00",
+  "dataset": {
+    "alignment_median_error_ms": {
+      "Node1": 1020.0,
+      "Node3": 1247.0,
+      "Node4": 834.0,
+      "Node5": 2522.0
+    },
+    "experiment_timestamp_range_ms": [
+      1772872216806,
+      1772875576406
+    ],
+    "n_experiments": 29,
+    "n_frequencies": 512,
+    "n_sensors": 4,
+    "selected_band_hz": [
+      88000000.0,
+      108000000.0
+    ],
+    "selected_rows_per_sensor": {
+      "Node1": 29,
+      "Node3": 29,
+      "Node4": 29,
+      "Node5": 29
+    },
+    "sensor_ids": [
+      "Node1",
+      "Node3",
+      "Node4",
+      "Node5"
+    ],
+    "sensor_shifts": {
+      "Node1": 0,
+      "Node3": 0,
+      "Node4": 0,
+      "Node5": 0
+    }
+  },
+  "excluded_sensor_ids": [
+    "Node9"
+  ],
+  "extra_summary": {
+    "corrected_mean_sensor_std_db": 1.4697193472779315,
+    "corrected_to_raw_dispersion_ratio": 0.43087895909663676,
+    "distribution_best_similarity": 0.43453226267869677,
+    "distribution_outlier_count": 1.0,
+    "fit_duration_s": 0.08149425900046481,
+    "raw_mean_sensor_std_db": 3.4109796179402334,
+    "recordwise_best_mean_correlation": 0.9261748497537386,
+    "test_fraction": 0.2
+  },
+  "fit_config": {
+    "lambda_gain_reference": 4.0,
+    "lambda_gain_smooth": 120.0,
+    "lambda_noise_reference": 60.0,
+    "lambda_noise_smooth": 180.0,
+    "lambda_reliable_anchor": 1.0,
+    "low_information_threshold_ratio": 0.1,
+    "low_information_weight": 0.05,
+    "n_iterations": 8,
+    "reliable_weight_boost": 1.1
+  },
+  "parameters_file": "calibration_parameters.npz",
+  "reference_sensor_id": "Node1",
+  "reliable_sensor_id": "Node1",
+  "response_dir": null,
+  "result_summary": {
+    "gain_cap_fraction": 0.0,
+    "global_low_information_fraction": 0.783203125,
+    "noise_zero_fraction": 0.0,
+    "objective_end": -606475.7872362664,
+    "objective_start": -543768.6963033549,
+    "sensor_low_information_fraction": 0.919921875,
+    "test_experiments": 6,
+    "train_experiments": 23
+  },
+  "schema_version": 1,
+  "sensor_summary_file": "sensor_summary.csv"
+}

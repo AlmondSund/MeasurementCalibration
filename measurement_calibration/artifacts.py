@@ -87,7 +87,7 @@ def save_spectral_calibration_artifact(
     result: SpectralCalibrationResult,  # Fitted calibration parameters
     dataset: CalibrationDataset,  # Dataset used to produce the fitted model
     acquisition_dir: Path,  # Source acquisition directory
-    response_dir: Path,  # Source nominal-response directory
+    response_dir: Path | None,  # Source nominal-response directory when available
     reference_sensor_id: str,  # Alignment reference sensor
     reliable_sensor_id: str,  # Softly anchored sensor during fitting
     excluded_sensor_ids: Collection[str],  # Sensors removed before training
@@ -109,6 +109,8 @@ def save_spectral_calibration_artifact(
         Directory containing the raw acquisition CSV files used during loading.
     response_dir:
         Directory containing the nominal response CSV files used during loading.
+        It may be omitted for RBW campaigns that do not have external nominal
+        response curves and therefore use an all-ones nominal-gain baseline.
     reference_sensor_id:
         Sensor that defined the alignment timeline.
     reliable_sensor_id:
@@ -310,7 +312,7 @@ def _build_artifact_manifest(
     result: SpectralCalibrationResult,
     dataset: CalibrationDataset,
     acquisition_dir: Path,
-    response_dir: Path,
+    response_dir: Path | None,
     reference_sensor_id: str,
     reliable_sensor_id: str,
     excluded_sensor_ids: Collection[str],
@@ -328,7 +330,9 @@ def _build_artifact_manifest(
         "parameters_file": parameters_path,
         "sensor_summary_file": sensor_summary_path,
         "acquisition_dir": str(Path(acquisition_dir).resolve()),
-        "response_dir": str(Path(response_dir).resolve()),
+        "response_dir": (
+            None if response_dir is None else str(Path(response_dir).resolve())
+        ),
         "reference_sensor_id": reference_sensor_id,
         "reliable_sensor_id": reliable_sensor_id,
         "excluded_sensor_ids": sorted(
