@@ -29,7 +29,7 @@ from statistics import median
 import numpy as np
 from numpy.typing import NDArray
 from scipy import sparse
-from scipy.sparse.linalg import factorized
+from scipy.sparse.linalg import spsolve
 
 
 FloatArray = NDArray[np.float64]
@@ -115,6 +115,18 @@ class SpectralCalibrationResult:
         Held-out experiment indices reserved for validation.
     objective_history:
         Penalized objective value after each alternating-estimation iteration.
+    latent_variation_power2:
+        Across-experiment latent-spectrum variance at each frequency on the
+        current network scale. This is a direct identifiability diagnostic:
+        bins with very small latent variation do not support a stable
+        gain-versus-noise separation.
+    information_weight:
+        Per-frequency confidence weight in ``[0, 1]`` used during the joint
+        sensor updates. Low-information bins receive smaller data weight so the
+        smoothness and reference penalties dominate there.
+    low_information_mask:
+        Boolean mask that marks bins whose latent variation fell below the
+        configured identifiability threshold.
     """
 
     sensor_ids: tuple[str, ...]
@@ -128,6 +140,9 @@ class SpectralCalibrationResult:
     train_indices: IndexArray
     test_indices: IndexArray
     objective_history: FloatArray
+    latent_variation_power2: FloatArray
+    information_weight: FloatArray
+    low_information_mask: NDArray[np.bool_]
 
 
 @dataclass(frozen=True)
@@ -363,10 +378,14 @@ def fit_spectral_calibration(
     n_iterations: int = 8,  # Alternating-estimation iterations
     lambda_gain_smooth: float = 250.0,  # Strength of the gain smoothness penalty
     lambda_noise_smooth: float = 50.0,  # Strength of the noise smoothness penalty
+    lambda_gain_reference: float = 2.0,  # Conservative damping toward the previous gain correction
+    lambda_noise_reference: float = 20.0,  # Conservative damping toward the previous noise floor
     lambda_reliable_anchor: float = 1.0,  # Penalty that keeps the reliable sensor close to nominal
     reliable_weight_boost: float = 1.0,  # Optional soft reliability boost in the latent-spectrum update
     max_correction_db: float
     | None = 12.0,  # Bound on the residual correction around the nominal curve [dB]
+    low_information_threshold_ratio: float = 0.05,  # Latent-variance threshold relative to the median informative bin
+    low_information_weight: float = 0.10,  # Residual data weight applied to low-information bins
     min_variance: float = 1.0e-14,  # Numerical floor for residual variances
 ) -> SpectralCalibrationResult:  # Estimated gains, noise floors, and latent spectra
     """Fit the alternating spectral calibration model in linear power scale.
@@ -374,10 +393,13 @@ def fit_spectral_calibration(
     The implementation follows the structure of ``docs/main.tex``:
 
     - latent spectra are updated by weighted least squares;
-    - per-sensor gain/noise parameters are updated by affine regression at each
-      frequency with explicit non-negativity handling;
+    - each sensor update solves one frequency-coupled linear system for the
+      residual gain correction and additive noise floor together;
     - second-difference penalties smooth the gain and noise curves over
-      frequency;
+      frequency inside that joint solve, rather than only after independent
+      per-bin fits;
+    - bins with too little latent-spectrum variation are downweighted so the
+      model does not force a fragile gain-versus-noise separation;
     - identifiability is enforced by requiring a unit geometric-mean gain at
       each frequency.
 
@@ -406,9 +428,17 @@ def fit_spectral_calibration(
     n_iterations:
         Number of alternating-estimation iterations.
     lambda_gain_smooth:
-        Second-difference penalty on the log-gain correction curves.
+        Second-difference penalty on the residual gain-correction curves.
     lambda_noise_smooth:
         Second-difference penalty on the additive noise curves.
+    lambda_gain_reference:
+        Conservative quadratic penalty that keeps each gain-correction update
+        close to the previous iteration. This reduces bin-to-bin oscillations
+        when the calibration data are only weakly informative.
+    lambda_noise_reference:
+        Conservative quadratic penalty that keeps each additive noise update
+        close to the previous iteration. In practice this makes the noise floor
+        harder to move than the multiplicative gain.
     lambda_reliable_anchor:
         Soft anchor that keeps the reliable sensor close to the nominal gain
         curve, or to unity when no nominal curve is provided.
@@ -421,6 +451,14 @@ def fit_spectral_calibration(
         nominal response. This encodes the modeling assumption that the
         laboratory curve captures the dominant structure and the in-situ
         correction should remain comparatively small.
+    low_information_threshold_ratio:
+        Fraction of the median latent-spectrum variance used to define
+        low-information bins. Frequencies below this threshold are treated as
+        poorly identifiable for the gain-plus-noise decomposition.
+    low_information_weight:
+        Residual data weight assigned to low-information bins. Values closer to
+        zero make the joint sensor update rely more heavily on smoothness and
+        reference penalties at those frequencies.
     min_variance:
         Lower numerical bound for the residual variances.
 
@@ -443,10 +481,18 @@ def fit_spectral_calibration(
         raise ValueError("frequency_hz must have shape (n_frequencies,)")
     if n_iterations < 1:
         raise ValueError("n_iterations must be at least 1")
+    if lambda_gain_reference < 0.0:
+        raise ValueError("lambda_gain_reference cannot be negative")
+    if lambda_noise_reference < 0.0:
+        raise ValueError("lambda_noise_reference cannot be negative")
     if reliable_weight_boost <= 0.0:
         raise ValueError("reliable_weight_boost must be strictly positive")
     if max_correction_db is not None and max_correction_db <= 0.0:
         raise ValueError("max_correction_db must be strictly positive when provided")
+    if low_information_threshold_ratio <= 0.0:
+        raise ValueError("low_information_threshold_ratio must be strictly positive")
+    if not 0.0 < low_information_weight <= 1.0:
+        raise ValueError("low_information_weight must lie in the interval (0, 1]")
 
     if nominal_gain_power is None:
         nominal_gain_power = np.ones((n_sensors, n_frequencies), dtype=np.float64)
@@ -502,14 +548,10 @@ def fit_spectral_calibration(
 
     second_difference = _second_difference_operator(n_frequencies)
     smooth_penalty = (second_difference.T @ second_difference).tocsc()
-    identity = sparse.eye(n_frequencies, format="csc")
-    gain_solver = factorized(identity + lambda_gain_smooth * smooth_penalty)
-    anchored_gain_solver = factorized(
-        identity
-        + lambda_gain_smooth * smooth_penalty
-        + lambda_reliable_anchor * identity
-    )
-    noise_solver = factorized(identity + lambda_noise_smooth * smooth_penalty)
+    correction_gain_power = np.clip(gain_power / nominal_gain_power, _EPSILON, None)
+    latent_variation_power2 = np.zeros(n_frequencies, dtype=np.float64)
+    information_weight = np.ones(n_frequencies, dtype=np.float64)
+    low_information_mask = np.zeros(n_frequencies, dtype=bool)
 
     objective_history = []
 
@@ -529,48 +571,54 @@ def fit_spectral_calibration(
             numerator / np.clip(denominator, _EPSILON, None), _EPSILON, None
         )
 
+        (
+            latent_variation_power2,
+            information_weight,
+            low_information_mask,
+        ) = _frequency_information_weights(
+            latent_spectra_power=latent_spectra_power,
+            low_information_threshold_ratio=low_information_threshold_ratio,
+            low_information_weight=low_information_weight,
+        )
+
         raw_gain_power = np.empty_like(gain_power)
         raw_noise_power = np.empty_like(additive_noise_power)
 
-        # Update each sensor curve frequency-by-frequency using an affine
-        # nonnegative regression in the latent spectrum.
+        # Update each sensor with a single frequency-coupled linear solve. The
+        # gain correction is damped toward the previous iteration, while the
+        # additive noise floor is kept even more conservative.
         for sensor_index in range(n_sensors):
-            gain_fit, noise_fit = _fit_sensor_affine_curve(
+            gain_reference_weight = lambda_gain_reference
+            gain_reference_power = correction_gain_power[sensor_index]
+            if sensor_index == reliable_sensor_index:
+                total_reference_weight = gain_reference_weight + lambda_reliable_anchor
+                if total_reference_weight > 0.0:
+                    gain_reference_power = (
+                        gain_reference_weight * gain_reference_power
+                        + lambda_reliable_anchor
+                    ) / total_reference_weight
+                    gain_reference_weight = total_reference_weight
+
+            gain_fit, noise_fit = _fit_sensor_joint_curves(
                 latent_spectra_power=latent_spectra_power,
                 observations_power=train_observations[sensor_index],
+                nominal_gain_power=nominal_gain_power[sensor_index],
+                correction_reference_power=gain_reference_power,
+                noise_reference_power=additive_noise_power[sensor_index],
+                observation_weight=weights[sensor_index],
+                information_weight=information_weight,
+                smooth_penalty=smooth_penalty,
+                lambda_gain_smooth=lambda_gain_smooth,
+                lambda_noise_smooth=lambda_noise_smooth,
+                lambda_gain_reference=gain_reference_weight,
+                lambda_noise_reference=lambda_noise_reference,
+                max_log_correction=max_log_correction,
             )
             raw_gain_power[sensor_index] = gain_fit
             raw_noise_power[sensor_index] = noise_fit
 
-        correction_gain_power = np.clip(
-            raw_gain_power / nominal_gain_power, _EPSILON, None
-        )
-        smoothed_log_correction = np.empty_like(correction_gain_power)
-
-        # Smooth the gain correction in log-domain and the noise floor in linear
-        # domain so the estimates respect the intended frequency regularity.
-        for sensor_index in range(n_sensors):
-            log_correction = np.log(correction_gain_power[sensor_index])
-            if max_log_correction is not None:
-                log_correction = np.clip(
-                    log_correction, -max_log_correction, max_log_correction
-                )
-            if sensor_index == reliable_sensor_index:
-                smoothed_log_correction[sensor_index] = anchored_gain_solver(
-                    log_correction
-                )
-            else:
-                smoothed_log_correction[sensor_index] = gain_solver(log_correction)
-            additive_noise_power[sensor_index] = np.clip(
-                noise_solver(raw_noise_power[sensor_index]), 0.0, None
-            )
-
-        if max_log_correction is not None:
-            smoothed_log_correction = np.clip(
-                smoothed_log_correction, -max_log_correction, max_log_correction
-            )
-        correction_gain_power = np.exp(smoothed_log_correction)
-        gain_power = nominal_gain_power * correction_gain_power
+        gain_power = raw_gain_power
+        additive_noise_power = raw_noise_power
 
         # Enforce the identifiability constraint by moving the common frequency
         # scale into the latent spectrum.
@@ -615,6 +663,9 @@ def fit_spectral_calibration(
         train_indices=train_indices,
         test_indices=test_indices,
         objective_history=np.asarray(objective_history, dtype=np.float64),
+        latent_variation_power2=latent_variation_power2,
+        information_weight=information_weight,
+        low_information_mask=low_information_mask,
     )
 
 
@@ -903,53 +954,121 @@ def _build_frequency_grid(
     return start_freq_hz + (np.arange(n_bins, dtype=np.float64) + 0.5) * bin_width_hz
 
 
-def _fit_sensor_affine_curve(
+def _fit_sensor_joint_curves(
     latent_spectra_power: FloatArray,  # Latent spectra with shape (experiments, frequencies)
     observations_power: FloatArray,  # Sensor observations with shape (experiments, frequencies)
+    nominal_gain_power: FloatArray,  # Nominal multiplicative response for the sensor
+    correction_reference_power: FloatArray,  # Conservative target for the residual gain correction
+    noise_reference_power: FloatArray,  # Conservative target for the additive noise floor
+    observation_weight: FloatArray,  # Residual-variance weights for this sensor
+    information_weight: FloatArray,  # Identifiability weights for each frequency bin
+    smooth_penalty: sparse.csc_matrix,  # Second-difference Gram matrix over frequency
+    lambda_gain_smooth: float,  # Gain smoothness penalty
+    lambda_noise_smooth: float,  # Noise smoothness penalty
+    lambda_gain_reference: float,  # Damping toward the previous correction
+    lambda_noise_reference: float,  # Damping toward the previous noise floor
+    max_log_correction: float | None,  # Optional symmetric log bound on the residual gain correction
 ) -> tuple[FloatArray, FloatArray]:  # Gain and additive noise curves for one sensor
-    """Fit the nonnegative affine model ``y = g x + n`` for every frequency bin."""
+    """Solve one conservative frequency-coupled gain/noise update for a sensor.
 
-    x = latent_spectra_power
-    y = observations_power
-    x_mean = np.mean(x, axis=0)
-    y_mean = np.mean(y, axis=0)
-    x_centered = x - x_mean
-    y_centered = y - y_mean
-    x_var = np.sum(x_centered**2, axis=0)
-    xy_cov = np.sum(x_centered * y_centered, axis=0)
+    The data term uses the affine model ``y = (g_nominal * c) x + n`` across all
+    training experiments. Frequencies are coupled through second-difference
+    penalties, while low-information bins are downweighted via
+    ``information_weight`` so the update falls back to the smooth conservative
+    references instead of producing unstable boundary solutions.
+    """
 
-    gain_ols = np.divide(
-        xy_cov, x_var, out=np.zeros_like(x_var), where=x_var > _EPSILON
+    n_experiments, n_frequencies = latent_spectra_power.shape
+    effective_weight = observation_weight * information_weight
+    scaled_latent = latent_spectra_power * nominal_gain_power[np.newaxis, :]
+
+    # The normal equations remain sparse because the data term is diagonal in
+    # frequency and only the smoothness penalty couples neighboring bins.
+    gain_data_diagonal = effective_weight * np.sum(scaled_latent**2, axis=0)
+    gain_noise_cross = effective_weight * np.sum(scaled_latent, axis=0)
+    noise_data_diagonal = effective_weight * float(n_experiments)
+    gain_rhs = effective_weight * np.sum(scaled_latent * observations_power, axis=0)
+    noise_rhs = effective_weight * np.sum(observations_power, axis=0)
+
+    gain_block = sparse.diags(
+        gain_data_diagonal + lambda_gain_reference, format="csc"
     )
-    noise_ols = y_mean - gain_ols * x_mean
-
-    # Compute the boundary solutions needed when the unconstrained affine fit
-    # violates the nonnegativity constraints.
-    gain_with_zero_noise = np.maximum(
-        np.sum(x * y, axis=0) / np.clip(np.sum(x * x, axis=0), _EPSILON, None), 0.0
+    noise_block = sparse.diags(
+        noise_data_diagonal + lambda_noise_reference, format="csc"
     )
-    noise_with_zero_gain = np.maximum(y_mean, 0.0)
+    cross_block = sparse.diags(gain_noise_cross, format="csc")
 
-    residuals_zero_noise = y - gain_with_zero_noise[np.newaxis, :] * x
-    residuals_zero_gain = y - noise_with_zero_gain[np.newaxis, :]
-    sse_zero_noise = np.sum(residuals_zero_noise**2, axis=0)
-    sse_zero_gain = np.sum(residuals_zero_gain**2, axis=0)
+    if smooth_penalty.shape[0] != 0:
+        gain_block = gain_block + lambda_gain_smooth * smooth_penalty
+        noise_block = noise_block + lambda_noise_smooth * smooth_penalty
 
-    gain = gain_ols.copy()
-    noise = noise_ols.copy()
+    system_matrix = sparse.bmat(
+        [[gain_block, cross_block], [cross_block, noise_block]], format="csc"
+    )
+    system_rhs = np.concatenate(
+        [
+            gain_rhs + lambda_gain_reference * correction_reference_power,
+            noise_rhs + lambda_noise_reference * noise_reference_power,
+        ]
+    )
+    solution = spsolve(system_matrix, system_rhs)
+    if not np.all(np.isfinite(solution)):
+        correction_gain_power = correction_reference_power.copy()
+        additive_noise_power = noise_reference_power.copy()
+        gain_power = nominal_gain_power * correction_gain_power
+        return gain_power, additive_noise_power
 
-    invalid_mask = (gain_ols < 0.0) | (noise_ols < 0.0)
-    choose_zero_noise = invalid_mask & (sse_zero_noise <= sse_zero_gain)
-    choose_zero_gain = invalid_mask & ~choose_zero_noise
+    correction_gain_power = np.asarray(solution[:n_frequencies], dtype=np.float64)
+    additive_noise_power = np.asarray(solution[n_frequencies:], dtype=np.float64)
 
-    gain[choose_zero_noise] = gain_with_zero_noise[choose_zero_noise]
-    noise[choose_zero_noise] = 0.0
-    gain[choose_zero_gain] = 0.0
-    noise[choose_zero_gain] = noise_with_zero_gain[choose_zero_gain]
+    if max_log_correction is None:
+        correction_lower_bound = _EPSILON
+        correction_upper_bound = None
+    else:
+        correction_lower_bound = math.exp(-max_log_correction)
+        correction_upper_bound = math.exp(max_log_correction)
+    correction_gain_power = np.clip(
+        correction_gain_power,
+        correction_lower_bound,
+        correction_upper_bound,
+    )
+    additive_noise_power = np.clip(additive_noise_power, 0.0, None)
+    gain_power = nominal_gain_power * correction_gain_power
+    return gain_power, additive_noise_power
 
-    gain = np.clip(gain, _EPSILON, None)
-    noise = np.clip(noise, 0.0, None)
-    return gain, noise
+
+def _frequency_information_weights(
+    latent_spectra_power: FloatArray,  # Latent spectra with shape (experiments, frequencies)
+    low_information_threshold_ratio: float,  # Threshold relative to the median informative variance
+    low_information_weight: float,  # Minimum data weight for weakly informative bins
+) -> tuple[FloatArray, FloatArray, NDArray[np.bool_]]:
+    """Estimate which frequency bins are poorly identified by the calibration set.
+
+    The affine separation between multiplicative gain and additive noise relies
+    on variation in the latent spectra across calibration experiments. When that
+    variation is very small, many gain/noise pairs explain the data nearly
+    equally well, so the sensor update must lean on regularization instead of
+    trusting the raw affine decomposition.
+    """
+
+    latent_variation_power2 = np.var(latent_spectra_power, axis=0)
+    positive_variation = latent_variation_power2[latent_variation_power2 > _EPSILON]
+    if positive_variation.size == 0:
+        information_weight = np.full(latent_variation_power2.shape, low_information_weight)
+        low_information_mask = np.ones(latent_variation_power2.shape, dtype=bool)
+        return latent_variation_power2, information_weight, low_information_mask
+
+    variance_threshold = max(
+        float(np.median(positive_variation)) * low_information_threshold_ratio,
+        _EPSILON,
+    )
+    information_weight = np.clip(
+        latent_variation_power2 / variance_threshold,
+        low_information_weight,
+        1.0,
+    )
+    low_information_mask = latent_variation_power2 < variance_threshold
+    return latent_variation_power2, information_weight, low_information_mask
 
 
 def _second_difference_operator(
@@ -995,23 +1114,12 @@ def _penalized_objective(
         noise_penalty = 0.0
     else:
         gain_penalty = float(
-            np.sum(
-                (
-                    second_difference
-                    @ np.log(np.clip(correction_gain_power.T, _EPSILON, None))
-                )
-                ** 2
-            )
+            np.sum((second_difference @ np.clip(correction_gain_power.T, _EPSILON, None)) ** 2)
         )
         noise_penalty = float(np.sum((second_difference @ additive_noise_power.T) ** 2))
 
     reliable_penalty = float(
-        np.sum(
-            np.log(
-                np.clip(correction_gain_power[reliable_sensor_index], _EPSILON, None)
-            )
-            ** 2
-        )
+        np.sum((correction_gain_power[reliable_sensor_index] - 1.0) ** 2)
     )
     return (
         nll

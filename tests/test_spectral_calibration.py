@@ -202,6 +202,54 @@ def test_fit_spectral_calibration_reduces_common_field_dispersion() -> None:
     assert np.allclose(np.mean(np.log(result.gain_power), axis=0), 0.0, atol=1.0e-8)
     assert np.all(np.isfinite(result.objective_history))
     assert result.objective_history[-1] < result.objective_history[0]
+    assert result.latent_variation_power2.shape == (n_frequencies,)
+    assert result.information_weight.shape == (n_frequencies,)
+    assert result.low_information_mask.shape == (n_frequencies,)
+
+
+def test_fit_spectral_calibration_flags_low_information_bins() -> None:
+    """Weakly varying calibration spectra should trigger conservative updates."""
+
+    n_sensors = 3
+    n_experiments = 8
+    n_frequencies = 24
+    sensor_ids = tuple(f"Node{index + 1}" for index in range(n_sensors))
+    frequency_hz = np.linspace(88.0e6, 108.0e6, n_frequencies)
+
+    # With no across-experiment spectral variation, gain and additive noise are
+    # not separately identifiable. The estimator should detect that regime and
+    # stay close to its conservative references instead of inventing large
+    # corrections.
+    latent_spectra = np.full((n_experiments, n_frequencies), 0.75, dtype=np.float64)
+    additive_noise = np.asarray(
+        [
+            np.linspace(0.01, 0.015, n_frequencies),
+            np.linspace(0.012, 0.017, n_frequencies),
+            np.linspace(0.011, 0.016, n_frequencies),
+        ]
+    )
+    observations = latent_spectra[np.newaxis, :, :] + additive_noise[:, np.newaxis, :]
+
+    result = fit_spectral_calibration(
+        observations_power=observations,
+        frequency_hz=frequency_hz,
+        sensor_ids=sensor_ids,
+        nominal_gain_power=np.ones((n_sensors, n_frequencies)),
+        reliable_sensor_id="Node1",
+        n_iterations=4,
+        lambda_gain_smooth=15.0,
+        lambda_noise_smooth=30.0,
+        lambda_gain_reference=8.0,
+        lambda_noise_reference=80.0,
+        low_information_threshold_ratio=0.5,
+        low_information_weight=0.02,
+    )
+
+    assert np.all(result.low_information_mask)
+    assert np.allclose(result.information_weight, 0.02)
+    assert np.max(np.abs(np.log(result.correction_gain_power))) < 0.12
+    assert np.all(np.isfinite(result.additive_noise_power))
+    assert np.all(result.additive_noise_power >= 0.0)
 
 
 def test_apply_deployed_calibration_and_consensus_shapes() -> None:
