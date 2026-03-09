@@ -487,7 +487,7 @@ def test_apply_deployed_calibration_and_consensus_shapes() -> None:
         )
     )
     gain = np.asarray([[1.0, 1.1, 1.2], [0.9, 1.0, 1.1]])
-    noise = np.asarray([[0.01, 0.01, 0.01], [0.02, 0.02, 0.02]])
+    noise = np.asarray([[1.0e-5, 1.0e-5, 1.0e-5], [2.0e-5, 2.0e-5, 2.0e-5]])
     sigma2 = np.asarray([[0.1, 0.1, 0.1], [0.2, 0.2, 0.2]])
 
     corrected = apply_deployed_calibration(observations, gain, noise)
@@ -496,6 +496,24 @@ def test_apply_deployed_calibration_and_consensus_shapes() -> None:
     assert corrected.shape == observations.shape
     assert consensus.shape == (2, 3)
     assert np.all(consensus >= 0.0)
+
+
+def test_compute_network_consensus_ignores_zero_clipped_bins() -> None:
+    """Consensus should drop zero-clipped bins instead of treating them as votes."""
+
+    corrected = np.asarray(
+        [
+            [[1.0, 0.0, 2.0, 0.0]],
+            [[3.0, 4.0, 0.0, 0.0]],
+        ],
+        dtype=np.float64,
+    )
+    sigma2 = np.ones((2, 4), dtype=np.float64)
+
+    consensus = compute_network_consensus(corrected, sigma2)
+
+    assert np.allclose(consensus[0, :3], np.asarray([2.0, 4.0, 2.0]))
+    assert np.isnan(consensus[0, 3])
 
 
 def test_apply_deployed_calibration_broadcasts_sensor_curves() -> None:

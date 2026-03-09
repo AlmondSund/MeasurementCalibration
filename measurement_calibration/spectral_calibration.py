@@ -988,8 +988,33 @@ def apply_deployed_calibration(
 def compute_network_consensus(
     corrected_power: FloatArray,  # Corrected PSD tensor with shape (sensors, experiments, frequencies)
     residual_variance_power2: FloatArray,  # Sensor reliability variances with shape (sensors, frequencies)
+    valid_mask: NDArray[np.bool_] | None = None,  # Optional per-sensor validity mask
 ) -> FloatArray:  # Weighted consensus PSD with shape (experiments, frequencies)
-    """Fuse corrected common-field spectra into a reliability-weighted consensus."""
+    """Fuse corrected common-field spectra into a reliability-weighted consensus.
+
+    Parameters
+    ----------
+    corrected_power:
+        Corrected PSD tensor with shape ``(n_sensors, n_experiments, n_frequencies)``.
+    residual_variance_power2:
+        Sensor reliability variances with shape ``(n_sensors, n_frequencies)``.
+    valid_mask:
+        Optional Boolean mask with the same shape as ``corrected_power``. When
+        provided, invalid sensor bins are excluded from the weighted average
+        instead of being allowed to pull the consensus toward zero. Even when
+        no explicit mask is supplied, non-finite and non-positive corrected
+        powers are treated as invalid because deployment clipping can map
+        ``Y <= N`` bins to exact zeros that are not physically meaningful
+        consensus votes.
+
+    Returns
+    -------
+    FloatArray
+        Weighted consensus PSD with shape ``(n_experiments, n_frequencies)``.
+        Bins with no valid contributing sensors are returned as ``NaN`` so
+        downstream plots and diagnostics can display them as undefined instead
+        of as artificial deep notches.
+    """
 
     corrected_power = np.asarray(corrected_power, dtype=np.float64)
     residual_variance_power2 = np.asarray(residual_variance_power2, dtype=np.float64)
@@ -1004,11 +1029,26 @@ def compute_network_consensus(
         raise ValueError(
             "residual_variance_power2 must have shape (sensors, frequencies)"
         )
+    if valid_mask is None:
+        valid_mask_array = np.isfinite(corrected_power) & (corrected_power > 0.0)
+    else:
+        valid_mask_array = np.asarray(valid_mask, dtype=bool)
+        if valid_mask_array.shape != corrected_power.shape:
+            raise ValueError("valid_mask must have the same shape as corrected_power")
+        valid_mask_array = (
+            valid_mask_array & np.isfinite(corrected_power) & (corrected_power > 0.0)
+        )
 
     weights = 1.0 / np.clip(residual_variance_power2, _EPSILON, None)
-    numerator = np.sum(weights[:, np.newaxis, :] * corrected_power, axis=0)
-    denominator = np.sum(weights, axis=0, keepdims=True)
-    return numerator / np.clip(denominator, _EPSILON, None)
+    effective_weight = weights[:, np.newaxis, :] * valid_mask_array
+    numerator = np.sum(effective_weight * corrected_power, axis=0)
+    denominator = np.sum(effective_weight, axis=0)
+    consensus = np.full(corrected_power.shape[1:], np.nan, dtype=np.float64)
+    valid_consensus_mask = denominator > 0.0
+    consensus[valid_consensus_mask] = (
+        numerator[valid_consensus_mask] / denominator[valid_consensus_mask]
+    )
+    return consensus
 
 
 def _load_acquisition_records(

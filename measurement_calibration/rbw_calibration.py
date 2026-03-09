@@ -541,6 +541,7 @@ def evaluate_rbw_calibration_holdout(
             residual_variance_power2=result.residual_variance_power2[
                 other_sensor_indices
             ],
+            valid_mask=~invalid_corrected_mask[other_sensor_indices],
         )
         leave_one_out_consensus_db = power_linear_to_db(leave_one_out_consensus_power)
         corrected_residual_db = (
