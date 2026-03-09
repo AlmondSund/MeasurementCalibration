@@ -86,6 +86,46 @@ def test_load_calibration_dataset_aligns_common_band(tmp_path: Path) -> None:
     assert np.array_equal(dataset.source_row_indices["Node2-Bogota"], np.array([0, 1]))
 
 
+def test_load_calibration_dataset_excludes_requested_sensors(tmp_path: Path) -> None:
+    """The loader should remove explicitly excluded sensors before alignment."""
+
+    acquisition_dir = tmp_path / "aquisitions"
+    response_dir = tmp_path / "responses"
+    acquisition_dir.mkdir()
+    response_dir.mkdir()
+
+    base_rows = [
+        _acquisition_row(
+            timestamp_ms=1_000,
+            start_hz=100.0,
+            end_hz=104.0,
+            power_db=[0.0, 1.0, 2.0, 3.0],
+        ),
+        _acquisition_row(
+            timestamp_ms=2_000,
+            start_hz=100.0,
+            end_hz=104.0,
+            power_db=[1.0, 2.0, 3.0, 4.0],
+        ),
+    ]
+
+    for sensor_id in ("Node1-Bogota", "Node2-Bogota", "Node3-Bogota"):
+        _write_acquisition_csv(acquisition_dir / f"{sensor_id}.csv", base_rows)
+        _write_response_csv(response_dir / f"{sensor_id}-response.csv")
+
+    dataset = load_calibration_dataset(
+        acquisition_dir=acquisition_dir,
+        response_dir=response_dir,
+        reference_sensor_id="Node1-Bogota",
+        excluded_sensor_ids=("Node3-Bogota",),
+    )
+
+    assert dataset.sensor_ids == ("Node1-Bogota", "Node2-Bogota")
+    assert "Node3-Bogota" not in dataset.sensor_shifts
+    assert "Node3-Bogota" not in dataset.source_row_indices
+    assert dataset.observations_power.shape == (2, 2, 4)
+
+
 def test_fit_spectral_calibration_reduces_common_field_dispersion() -> None:
     """Synthetic calibration should reduce held-out inter-sensor dispersion."""
 
@@ -185,6 +225,35 @@ def test_apply_deployed_calibration_and_consensus_shapes() -> None:
     assert corrected.shape == observations.shape
     assert consensus.shape == (2, 3)
     assert np.all(consensus >= 0.0)
+
+
+def test_apply_deployed_calibration_broadcasts_sensor_curves() -> None:
+    """Deployment correction should support 2D and higher-rank sensor-first tensors."""
+
+    gain = np.asarray([[2.0, 4.0, 8.0], [1.0, 2.0, 4.0]])
+    noise = np.asarray([[1.0, 1.0, 1.0], [0.5, 0.5, 0.5]])
+
+    observations_2d = np.asarray([[5.0, 9.0, 17.0], [1.5, 2.5, 4.5]])
+    corrected_2d = apply_deployed_calibration(observations_2d, gain, noise)
+
+    expected_2d = np.asarray([[2.0, 2.0, 2.0], [1.0, 1.0, 1.0]])
+    assert corrected_2d.shape == observations_2d.shape
+    assert np.allclose(corrected_2d, expected_2d)
+
+    template = np.asarray(
+        [
+            [[2.0, 1.5, 1.0], [0.5, 0.25, 0.125]],
+            [[1.0, 0.5, 0.25], [3.0, 2.0, 1.0]],
+        ]
+    )
+    observations_4d = (
+        gain[:, np.newaxis, np.newaxis, :] * template
+        + noise[:, np.newaxis, np.newaxis, :]
+    )
+    corrected_4d = apply_deployed_calibration(observations_4d, gain, noise)
+
+    assert corrected_4d.shape == observations_4d.shape
+    assert np.allclose(corrected_4d, template)
 
 
 def _acquisition_row(

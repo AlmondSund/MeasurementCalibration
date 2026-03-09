@@ -17,6 +17,7 @@ The implementation keeps the numerical core separate from notebook orchestration
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass
 import csv
 import json
@@ -161,6 +162,8 @@ def load_calibration_dataset(
     acquisition_dir: Path,  # Directory with sensor acquisition CSV files
     response_dir: Path,  # Directory with nominal response CSV files
     reference_sensor_id: str = "Node1-Bogota",  # Sensor used as alignment reference
+    excluded_sensor_ids: Collection[str]
+    | None = None,  # Sensors removed before alignment
     max_alignment_shift: int = 3,  # Maximum integer experiment offset to search
 ) -> CalibrationDataset:  # Aligned tensor ready for calibration
     """Load, align, and validate the common-field calibration dataset.
@@ -180,6 +183,10 @@ def load_calibration_dataset(
         Directory containing one nominal response CSV per sensor.
     reference_sensor_id:
         Sensor used to define the experiment ordering and reference timestamps.
+    excluded_sensor_ids:
+        Optional sensor identifiers to remove before selecting the common band
+        and aligning experiments. This is useful when external metadata shows
+        that a subset of sensors violates the common-field assumptions.
     max_alignment_shift:
         Maximum absolute index shift considered when aligning each sensor to the
         reference sequence. This keeps the alignment logic simple and explicit.
@@ -211,6 +218,28 @@ def load_calibration_dataset(
     records_by_sensor = {
         path.stem: _load_acquisition_records(path) for path in acquisition_paths
     }
+    excluded_sensor_ids = frozenset(
+        () if excluded_sensor_ids is None else excluded_sensor_ids
+    )
+    if excluded_sensor_ids:
+        unknown_sensor_ids = sorted(
+            excluded_sensor_ids.difference(records_by_sensor.keys())
+        )
+        if unknown_sensor_ids:
+            raise ValueError(
+                "excluded_sensor_ids contains unknown sensors: "
+                + ", ".join(unknown_sensor_ids)
+            )
+        if reference_sensor_id in excluded_sensor_ids:
+            raise ValueError(
+                "reference_sensor_id cannot be excluded from the calibration dataset"
+            )
+        records_by_sensor = {
+            sensor_id: records
+            for sensor_id, records in records_by_sensor.items()
+            if sensor_id not in excluded_sensor_ids
+        }
+
     sensor_ids = tuple(sorted(records_by_sensor))
 
     if reference_sensor_id not in records_by_sensor:
@@ -590,7 +619,7 @@ def fit_spectral_calibration(
 
 
 def apply_deployed_calibration(
-    observations_power: FloatArray,  # Observed PSD values with shape (..., frequencies) or (sensors, ..., frequencies)
+    observations_power: FloatArray,  # Observed PSD values with shape (sensors, ..., frequencies) or (frequencies,) for a single sensor
     gain_power: FloatArray,  # Gain curves with shape (sensors, frequencies)
     additive_noise_power: FloatArray,  # Noise floor curves with shape (sensors, frequencies)
     enforce_nonnegative: bool = True,  # Whether to truncate negative corrected spectra
@@ -604,8 +633,10 @@ def apply_deployed_calibration(
     Parameters
     ----------
     observations_power:
-        New PSD observations. The first axis must be the sensor axis when the
-        array is at least two-dimensional.
+        New PSD observations. The general shape is
+        ``(n_sensors, ..., n_frequencies)`` where the first axis is the sensor
+        axis and the last axis is frequency. A one-dimensional input is accepted
+        only for the single-sensor case ``(n_frequencies,)``.
     gain_power:
         Estimated multiplicative gain curves ``G_s(f)``.
     additive_noise_power:
@@ -618,18 +649,47 @@ def apply_deployed_calibration(
     gain_power = np.asarray(gain_power, dtype=np.float64)
     additive_noise_power = np.asarray(additive_noise_power, dtype=np.float64)
 
+    if gain_power.ndim != 2:
+        raise ValueError("gain_power must have shape (sensors, frequencies)")
     if gain_power.shape != additive_noise_power.shape:
         raise ValueError(
             "gain_power and additive_noise_power must share the same shape"
         )
-    if observations_power.shape[0] != gain_power.shape[0]:
-        raise ValueError(
-            "The first axis of observations_power must match the sensor axis"
-        )
+    if observations_power.ndim == 0:
+        raise ValueError("observations_power must have at least one dimension")
 
-    corrected = (observations_power - additive_noise_power[:, np.newaxis, :]) / np.clip(
-        gain_power[:, np.newaxis, :], _EPSILON, None
-    )
+    if observations_power.ndim == 1:
+        if gain_power.shape[0] != 1:
+            raise ValueError(
+                "One-dimensional observations_power is only valid for a single sensor"
+            )
+        if observations_power.shape[0] != gain_power.shape[1]:
+            raise ValueError(
+                "The frequency axis of observations_power must match gain_power"
+            )
+        gain_view = gain_power[0]
+        noise_view = additive_noise_power[0]
+    else:
+        if observations_power.shape[0] != gain_power.shape[0]:
+            raise ValueError(
+                "The first axis of observations_power must match the sensor axis"
+            )
+        if observations_power.shape[-1] != gain_power.shape[1]:
+            raise ValueError(
+                "The last axis of observations_power must match the frequency axis"
+            )
+
+        # Keep the sensor axis explicit and broadcast the calibration curves
+        # across any intermediate deployment dimensions.
+        curve_shape = (
+            (gain_power.shape[0],)
+            + (1,) * (observations_power.ndim - 2)
+            + (gain_power.shape[1],)
+        )
+        gain_view = np.reshape(gain_power, curve_shape)
+        noise_view = np.reshape(additive_noise_power, curve_shape)
+
+    corrected = (observations_power - noise_view) / np.clip(gain_view, _EPSILON, None)
     if enforce_nonnegative:
         corrected = np.clip(corrected, 0.0, None)
     return corrected
