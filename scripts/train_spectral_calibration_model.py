@@ -57,7 +57,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--acquisition-dir",
         type=Path,
-        default=REPO_ROOT / "data" / "aquisitions",
+        default=REPO_ROOT / "data" / "acquisitions",
         help="Directory that contains the acquisition CSV files.",
     )
     parser.add_argument(

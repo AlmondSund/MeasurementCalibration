@@ -21,7 +21,7 @@ from measurement_calibration.spectral_calibration import (
 def test_load_calibration_dataset_aligns_common_band(tmp_path: Path) -> None:
     """The loader should retain only the shared band and align shifted sensors."""
 
-    acquisition_dir = tmp_path / "aquisitions"
+    acquisition_dir = tmp_path / "acquisitions"
     response_dir = tmp_path / "responses"
     acquisition_dir.mkdir()
     response_dir.mkdir()
@@ -89,7 +89,7 @@ def test_load_calibration_dataset_aligns_common_band(tmp_path: Path) -> None:
 def test_load_calibration_dataset_excludes_requested_sensors(tmp_path: Path) -> None:
     """The loader should remove explicitly excluded sensors before alignment."""
 
-    acquisition_dir = tmp_path / "aquisitions"
+    acquisition_dir = tmp_path / "acquisitions"
     response_dir = tmp_path / "responses"
     acquisition_dir.mkdir()
     response_dir.mkdir()

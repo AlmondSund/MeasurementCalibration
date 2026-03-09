@@ -62,7 +62,7 @@ def test_save_and_load_spectral_calibration_artifact_round_trip(
         output_dir=tmp_path / "artifact",
         result=result,
         dataset=dataset,
-        acquisition_dir=tmp_path / "aquisitions",
+        acquisition_dir=tmp_path / "acquisitions",
         response_dir=tmp_path / "responses",
         reference_sensor_id="Node1",
         reliable_sensor_id="Node1",

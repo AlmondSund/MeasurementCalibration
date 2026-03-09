@@ -1,5 +1,5 @@
 {
-  "acquisition_dir": "/home/marti/Code/MeasurementCalibration/data/aquisitions",
+  "acquisition_dir": "/home/marti/Code/MeasurementCalibration/data/acquisitions",
   "artifact_type": "spectral_calibration_model",
   "created_at_utc": "2026-03-09T16:17:43.297339+00:00",
   "dataset": {
