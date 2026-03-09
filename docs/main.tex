@@ -1,0 +1,278 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{lmodern}
+\usepackage{amsmath}
+\usepackage{microtype}
+\setlength{\emergencystretch}{4em}
+
+\begin{document}
+
+\setlength{\emergencystretch}{4em}
+
+\section{Theoretical framework for spectral calibration in a sensor network}
+
+\subsection{Observation model}
+
+Let $\mathcal{F}=\{f_1,\dots,f_J\}$ denote the discrete frequency grid, let $s\in\{1,\dots,M\}$ index the sensors, with $M=10$, and let $k\in\{1,\dots,K\}$ index the calibration experiments carried out under common observation conditions. For each experiment $k$ and frequency $f\in\mathcal{F}$, all sensors are assumed to observe the same latent power spectral density (PSD), denoted by $S_k(f)\ge 0$.
+
+The measurement delivered by sensor $s$ at frequency $f$ in experiment $k$ is modeled, in linear power scale, as
+\begin{equation}
+Y_{s,k}(f)=G_s(f)\,S_k(f)+N_s(f)+\varepsilon_{s,k}(f),
+\label{eq:model}
+\end{equation}
+where:
+\begin{itemize}
+    \item $Y_{s,k}(f)\ge 0$ is the observed PSD;
+    \item $G_s(f)>0$ is the multiplicative frequency response of sensor $s$;
+    \item $N_s(f)\ge 0$ is the additive internal noise floor of sensor $s$;
+    \item $\varepsilon_{s,k}(f)$ is a zero-mean residual term.
+\end{itemize}
+
+A natural working assumption is
+\begin{equation}
+\varepsilon_{s,k}(f)\mid S_k(f)\sim \mathcal{N}\!\left(0,\sigma_s^2(f)\right),
+\label{eq:gaussian_noise}
+\end{equation}
+independently across $k$, conditionally on the latent spectra, where $\sigma_s^2(f)$ is sensor- and frequency-dependent. The Gaussian assumption is not essential, but it yields a tractable estimation framework and can be replaced by a robust likelihood if required.
+
+\subsection{Structural assumptions}
+
+The calibration problem is formulated under the following assumptions:
+
+\begin{enumerate}
+    \item[(A1)] \textbf{Common latent spectrum during calibration.} For each calibration experiment $k$, the quantity $S_k(f)$ is identical for all sensors $s$.
+    \item[(A2)] \textbf{Sensor-specific transfer characteristics.} The functions $G_s(f)$ and $N_s(f)$ depend only on the sensor and frequency, and are invariant across the calibration experiments.
+    \item[(A3)] \textbf{Spectral smoothness.} The functions $f\mapsto G_s(f)$ and $f\mapsto N_s(f)$ are sufficiently smooth on $\mathcal{F}$.
+    \item[(A4)] \textbf{Transferability.} The sensor-specific functions estimated from the calibration set remain valid during later deployment, even when the sensors no longer observe the same spectrum.
+\end{enumerate}
+
+\subsection{Identifiability}
+
+Model \eqref{eq:model} is not identifiable without an additional normalization constraint. Indeed, for any strictly positive function $c(f)$,
+\[
+G_s(f)\mapsto c(f)\,G_s(f),
+\qquad
+S_k(f)\mapsto c(f)^{-1}S_k(f),
+\]
+leaves \eqref{eq:model} invariant. Hence, the parameterization is defined only up to a frequency-dependent scale factor.
+
+To remove this indeterminacy, impose for each $f\in\mathcal{F}$ the normalization
+\begin{equation}
+\frac{1}{M}\sum_{s=1}^{M}\log G_s(f)=0,
+\label{eq:ident}
+\end{equation}
+which is equivalent to requiring that the geometric mean of $\{G_s(f)\}_{s=1}^M$ equals one.
+
+Under \eqref{eq:ident}, the latent spectrum $S_k(f)$ is interpreted as the common PSD expressed on the network reference scale.
+
+\subsection{Prior information on the most reliable sensor}
+
+Suppose that prior engineering knowledge indicates that Sensor $7$ is the most reliable instrument in the network, but not a perfect reference. This information should not be imposed as a hard constraint $G_7(f)\equiv 1$, since that would artificially transfer all model mismatch to the remaining sensors. Instead, it is introduced through a soft regularization:
+\begin{equation}
+\log G_7(f)\sim \mathcal{N}(0,\tau_7^2),
+\qquad
+0<\tau_7^2\ll 1,
+\label{eq:soft_anchor}
+\end{equation}
+together with the prior expectation that
+\begin{equation}
+\sigma_7^2(f)\le \sigma_s^2(f),
+\qquad s\neq 7,
+\label{eq:variance_prior}
+\end{equation}
+in an average or regularized sense. This construction gives Sensor $7$ greater inferential influence while preserving model flexibility.
+
+\subsection{Penalized likelihood formulation}
+
+Define the full parameter set
+\[
+\Theta=
+\left\{
+G_s(f),\,N_s(f),\,\sigma_s^2(f)
+\right\}_{s=1,\dots,M;\,f\in\mathcal{F}}
+\cup
+\left\{
+S_k(f)
+\right\}_{k=1,\dots,K;\,f\in\mathcal{F}}.
+\]
+
+Under \eqref{eq:gaussian_noise}, the negative log-likelihood, up to an additive constant, is
+\begin{equation}
+\mathcal{L}(\Theta)
+=
+\frac{1}{2}
+\sum_{f\in\mathcal{F}}
+\sum_{k=1}^{K}
+\sum_{s=1}^{M}
+\left[
+\log \sigma_s^2(f)
++
+\frac{\bigl(Y_{s,k}(f)-G_s(f)S_k(f)-N_s(f)\bigr)^2}{\sigma_s^2(f)}
+\right].
+\label{eq:nll}
+\end{equation}
+
+To enforce smoothness and incorporate prior information, consider the penalized objective
+\begin{equation}
+\mathcal{J}(\Theta)
+=
+\mathcal{L}(\Theta)
++
+\lambda_G \mathcal{P}_G
++
+\lambda_N \mathcal{P}_N
++
+\lambda_7 \mathcal{P}_7,
+\label{eq:penalized_obj}
+\end{equation}
+subject to the identifiability constraint \eqref{eq:ident}, where
+\begin{align}
+\mathcal{P}_G
+&=
+\sum_{s=1}^{M}\sum_{j=2}^{J-1}
+\left(
+\Delta^2 \log G_s(f_j)
+\right)^2,
+\label{eq:Pg}
+\\
+\mathcal{P}_N
+&=
+\sum_{s=1}^{M}\sum_{j=2}^{J-1}
+\left(
+\Delta^2 N_s(f_j)
+\right)^2,
+\label{eq:Pn}
+\\
+\mathcal{P}_7
+&=
+\sum_{j=1}^{J}
+\bigl(\log G_7(f_j)\bigr)^2.
+\label{eq:P7}
+\end{align}
+Here $\Delta^2$ denotes the second-order finite-difference operator on the frequency grid. Penalties \eqref{eq:Pg}--\eqref{eq:Pn} prevent nonphysical oscillations in the estimated transfer characteristics.
+
+\subsection{Alternating estimation}
+
+Direct minimization of \eqref{eq:penalized_obj} is nonconvex jointly in $(G_s,S_k,N_s)$, but conditionally convex in several blocks. A natural approach is block-coordinate descent or an EM-type alternating scheme.
+
+\paragraph{Update of the latent spectrum.}
+Assuming $\{G_s(f),N_s(f),\sigma_s^2(f)\}$ fixed, for each $(k,f)$ the minimizer with respect to $S_k(f)$ is the weighted least-squares estimator
+\begin{equation}
+\widehat{S}_k(f)
+=
+\frac{
+\sum_{s=1}^{M}
+w_s(f)\,G_s(f)\,\bigl(Y_{s,k}(f)-N_s(f)\bigr)
+}{
+\sum_{s=1}^{M}
+w_s(f)\,G_s^2(f)
+},
+\qquad
+w_s(f)=\sigma_s^{-2}(f).
+\label{eq:Sk_update}
+\end{equation}
+
+\paragraph{Update of sensor-specific parameters.}
+Fixing $\{S_k(f)\}$, each pair $\{G_s(f),N_s(f)\}$ is obtained by solving
+\begin{equation}
+\min_{G_s(f)>0,\;N_s(f)\ge 0}
+\sum_{k=1}^{K}
+\frac{
+\bigl(Y_{s,k}(f)-G_s(f)S_k(f)-N_s(f)\bigr)^2
+}{
+\sigma_s^2(f)
+},
+\label{eq:sensor_regression}
+\end{equation}
+possibly coupled across frequencies through the smoothness penalties \eqref{eq:Pg}--\eqref{eq:Pn}.
+
+\paragraph{Update of residual variances.}
+Given current estimates $\widehat{G}_s(f)$, $\widehat{N}_s(f)$ and $\widehat{S}_k(f)$, define residuals
+\begin{equation}
+\widehat{r}_{s,k}(f)
+=
+Y_{s,k}(f)-\widehat{G}_s(f)\widehat{S}_k(f)-\widehat{N}_s(f),
+\label{eq:residuals}
+\end{equation}
+and estimate
+\begin{equation}
+\widehat{\sigma}_s^2(f)
+=
+\frac{1}{K}
+\sum_{k=1}^{K}
+\widehat{r}_{s,k}^2(f),
+\label{eq:sigma_update}
+\end{equation}
+or replace \eqref{eq:sigma_update} by a robust scale estimator if outliers are expected.
+
+\subsection{Interpretation of the calibrated sensor model}
+
+Once $\widehat{G}_s(f)$ and $\widehat{N}_s(f)$ are available, any future measurement $Y^{\mathrm{new}}_s(f)$ obtained by sensor $s$ can be mapped to the common reference scale through
+\begin{equation}
+\widehat{S}^{\,\mathrm{new}}_s(f)
+=
+\frac{
+Y^{\mathrm{new}}_s(f)-\widehat{N}_s(f)
+}{
+\widehat{G}_s(f)
+}.
+\label{eq:deployed_calibration}
+\end{equation}
+If physical nonnegativity must be enforced explicitly, one may use
+\begin{equation}
+\widehat{S}^{\,\mathrm{new}}_s(f)
+=
+\max\left\{
+0,\,
+\frac{
+Y^{\mathrm{new}}_s(f)-\widehat{N}_s(f)
+}{
+\widehat{G}_s(f)
+}
+\right\}.
+\label{eq:truncated_calibration}
+\end{equation}
+
+Equation \eqref{eq:deployed_calibration} is the central transfer result of the calibration stage: the mapping is sensor-specific but experiment-independent. Therefore, after calibration, each sensor can provide a PSD estimate on the common network scale even when deployed at a different location and observing a different underlying spectrum.
+
+\subsection{Consensus estimator under common-field operation}
+
+If, at some later stage, a subset or all sensors again observe the same latent spectrum, then the corrected PSDs can be fused into a consensus estimator. Given calibrated measurements $\widehat{S}_s(f)$ and reliability weights $\widehat{w}_s(f)=\widehat{\sigma}_s^{-2}(f)$, define
+\begin{equation}
+\widehat{S}_{\mathrm{net}}(f)
+=
+\frac{
+\sum_{s=1}^{M}\widehat{w}_s(f)\,\widehat{S}_s(f)
+}{
+\sum_{s=1}^{M}\widehat{w}_s(f)
+}.
+\label{eq:network_consensus}
+\end{equation}
+This aggregation is meaningful only if the sensors are measuring the same physical spectrum. When the deployed sensors observe different local spectra, \eqref{eq:network_consensus} is generally not physically interpretable unless an additional spatial field model is introduced.
+
+\subsection{Incorporation of nominal frequency-response curves}
+
+Suppose that, for each sensor $s$, a nominal frequency-response curve $G_s^{(0)}(f)$ is available from laboratory characterization. Then the model can be reparameterized as
+\begin{equation}
+G_s(f)=G_s^{(0)}(f)\,\widetilde{G}_s(f),
+\label{eq:response_decomposition}
+\end{equation}
+where $\widetilde{G}_s(f)$ is an unknown residual correction close to unity. Substituting \eqref{eq:response_decomposition} into \eqref{eq:model} gives
+\begin{equation}
+Y_{s,k}(f)
+=
+G_s^{(0)}(f)\,\widetilde{G}_s(f)\,S_k(f)+N_s(f)+\varepsilon_{s,k}(f).
+\label{eq:model_with_nominal}
+\end{equation}
+This formulation is preferable whenever nominal response measurements are available, since it separates known instrumental structure from residual in-situ calibration.
+
+\subsection{Validation principle}
+
+The model is intended to estimate sensor-specific effects rather than memorize the calibration dataset. Accordingly, validation should be performed by holding out entire calibration experiments. Let $\mathcal{K}_{\mathrm{train}}\cup\mathcal{K}_{\mathrm{test}}=\{1,\dots,K\}$ be a partition of the calibration conditions. Parameters are estimated using $\mathcal{K}_{\mathrm{train}}$, and predictive agreement across sensors is then assessed on $\mathcal{K}_{\mathrm{test}}$ after correction via \eqref{eq:deployed_calibration}. A successful calibration should reduce inter-sensor bias and residual dispersion on held-out common-field experiments.
+
+\subsection{Summary}
+
+The calibration problem is thus formulated as a constrained latent-variable estimation problem in which the common PSDs $\{S_k(f)\}$ and the sensor-specific transfer functions $\{G_s(f),N_s(f)\}$ are jointly inferred from common-field measurements. The key consequence is that the equal-condition dataset is used only to identify the instrumental distortions; once these distortions have been estimated, each sensor can be independently corrected in later operation, even when the underlying spectra differ across locations. The superior reliability of Sensor $7$ enters the model as soft prior information, thereby improving stability without imposing an unjustified perfect-reference assumption.
+\end{document}
