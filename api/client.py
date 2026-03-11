@@ -34,6 +34,7 @@ DEFAULT_CAMPAIGN_IDS: dict[str, int] = {
     "no dc, no iq": 202,
     "no dc, yes iq": 203,
     "yes dc, yes iq": 204,
+    "test-calibration": 205,
     "FM original": 176,
 }
 DEFAULT_SENSOR_MAC_BY_LABEL: dict[str, str] = {
@@ -42,6 +43,7 @@ DEFAULT_SENSOR_MAC_BY_LABEL: dict[str, str] = {
     "Node3": "d8:3a:dd:f7:22:87",
     "Node5": "d8:3a:dd:f7:21:52",
     "Node9": "d8:3a:dd:f4:4e:d1",
+    "Node10": "d8:3a:dd:f7:1d:90",
 }
 
 CSV_FIELDNAMES: tuple[str, ...] = (

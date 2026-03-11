@@ -10,6 +10,8 @@ import numpy as np
 import pytest
 
 from api.client import (
+    DEFAULT_CAMPAIGN_IDS,
+    DEFAULT_SENSOR_MAC_BY_LABEL,
     MeasurementApiClient,
     MeasurementApiConfig,
     MeasurementApiError,
@@ -167,3 +169,10 @@ def test_fetch_sensor_measurements_rejects_non_mapping_rows() -> None:
             mac_address="d8:3a:dd:f7:1d:f2",
             campaign_id=176,
         )
+
+
+def test_default_lookup_tables_include_test_calibration_and_node10() -> None:
+    """The notebook-facing defaults should expose the requested additions."""
+
+    assert DEFAULT_CAMPAIGN_IDS["test-calibration"] == 205
+    assert DEFAULT_SENSOR_MAC_BY_LABEL["Node10"] == "d8:3a:dd:f7:1d:90"
