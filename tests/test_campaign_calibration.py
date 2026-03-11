@@ -1,4 +1,4 @@
-"""Tests for the dynamic campaign-calibration adapter."""
+"""Tests for campaign metadata parsing and corpus preparation."""
 
 from __future__ import annotations
 
@@ -7,203 +7,180 @@ import json
 from pathlib import Path
 
 import numpy as np
-import pytest
 
-from measurement_calibration.artifacts import load_spectral_calibration_artifact
+from measurement_calibration.artifacts import load_two_level_calibration_artifact
 from measurement_calibration.campaign_calibration import (
-    build_campaign_calibration_output_dir,
-    build_campaign_deployment_inputs,
-    fit_and_save_campaign_calibration_model,
-    prepare_campaign_calibration_dataset,
+    build_corpus_calibration_output_dir,
+    fit_and_save_calibration_corpus_model,
+    load_campaign_configuration,
+    prepare_calibration_campaign,
+    prepare_calibration_corpus,
 )
-from measurement_calibration.spectral_calibration import power_db_to_linear
+from measurement_calibration.spectral_calibration import (
+    FrequencyBasisConfig,
+    PersistentModelConfig,
+    TwoLevelFitConfig,
+)
 
 
-def test_prepare_campaign_calibration_dataset_builds_linear_tensor(
+def test_load_campaign_configuration_parses_placeholder_metadata(
     tmp_path: Path,
 ) -> None:
-    """Campaign preparation should align records and expose the generic fit tensor."""
+    """The metadata parser should normalize placeholder units into SI values."""
+
+    campaign_dir = tmp_path / "campaigns" / "MeasurementCalibration"
+    _write_metadata_csv(
+        campaign_dir / "metadata.csv",
+        {
+            "campaign_label": "MeasurementCalibration",
+            "start_date": "03/10/2026",
+            "stop_date": "03/10/2026",
+            "start_time": "00:00:00",
+            "stop_time": "06:00:00",
+            "acquisition_freq_minutes": "2",
+            "central_freq_MHz": "98",
+            "span_MHz": "20",
+            "lna_gain_dB": "0",
+            "vga_gain_dB": "62",
+            "rbw_kHz": "10",
+            "antenna_amp": "true",
+        },
+    )
+
+    configuration = load_campaign_configuration(campaign_dir)
+
+    assert configuration.central_frequency_hz == 98.0e6
+    assert configuration.span_hz == 20.0e6
+    assert configuration.resolution_bandwidth_hz == 10.0e3
+    assert configuration.acquisition_interval_s == 120.0
+    assert configuration.antenna_amplifier_enabled is True
+
+
+def test_prepare_calibration_campaign_builds_linear_power_campaign(
+    tmp_path: Path,
+) -> None:
+    """Campaign preparation should ignore metadata.csv and expose the new contract."""
 
     campaigns_root = tmp_path / "campaigns"
-    _write_synthetic_campaign(campaigns_root / "training-campaign")
+    _write_campaign_fixture(
+        campaigns_root / "training-campaign",
+        central_freq_mhz=98.0,
+        span_mhz=20.0,
+        rbw_khz=10.0,
+    )
 
-    preparation = prepare_campaign_calibration_dataset(
-        "training-campaign",
+    preparation = prepare_calibration_campaign(
+        campaign_label="training-campaign",
         campaigns_root=campaigns_root,
         ranking_histogram_bins=8,
         distribution_histogram_bins=32,
         alignment_tolerance_ms=80,
     )
-    dataset = preparation.calibration_dataset
 
-    assert dataset.sensor_ids == ("Node1", "Node2", "Node3", "Node9")
-    assert dataset.observations_power.shape == (4, 5, 8)
-    assert np.allclose(
-        dataset.observations_power,
-        power_db_to_linear(preparation.aligned_dataset.observations_db),
-    )
-    assert np.allclose(dataset.nominal_gain_power, 1.0)
-    assert np.array_equal(
-        dataset.experiment_timestamps_ms,
-        np.median(preparation.aligned_dataset.timestamps_ms, axis=0).astype(np.int64),
-    )
-    assert dataset.selected_band_hz == (88.0e6, 108.0e6)
-    assert (
-        preparation.reliable_sensor_id
-        == preparation.ranking_result.ranking_sensor_ids[0]
-    )
-    assert (
-        preparation.reliable_sensor_id
-        not in preparation.distribution_outlier_sensor_ids
-    )
+    assert preparation.metadata_path.name == "metadata.csv"
+    assert preparation.campaign.sensor_ids == ("Node1", "Node2", "Node3", "Node9")
+    assert preparation.campaign.observations_power.shape == (4, 5, 8)
+    assert np.all(preparation.campaign.observations_power > 0.0)
+    assert preparation.campaign.configuration.central_frequency_hz == 98.0e6
+    assert preparation.reliable_sensor_id not in preparation.distribution_outlier_sensor_ids
     assert preparation.distribution_outlier_sensor_ids == ("Node9",)
-    assert all(
-        dataset.sensor_shifts[sensor_id] == 0 for sensor_id in dataset.sensor_ids
-    )
-    assert all(
-        np.array_equal(
-            dataset.source_row_indices[sensor_id], np.arange(5, dtype=np.int64)
-        )
-        for sensor_id in dataset.sensor_ids
-    )
 
 
-def test_prepare_campaign_calibration_dataset_rejects_unknown_exclusions(
+def test_prepare_calibration_corpus_and_fit_wrapper_write_artifact(
     tmp_path: Path,
 ) -> None:
-    """Preparation should fail fast when the caller excludes an unknown sensor."""
+    """Corpus preparation and the fit wrapper should produce a reusable artifact."""
 
     campaigns_root = tmp_path / "campaigns"
-    _write_synthetic_campaign(campaigns_root / "training-campaign")
-
-    with pytest.raises(ValueError, match="unknown sensors"):
-        prepare_campaign_calibration_dataset(
-            "training-campaign",
-            campaigns_root=campaigns_root,
-            excluded_sensor_ids=("Node404",),
-        )
-
-
-def test_fit_and_save_campaign_calibration_model_writes_artifact_bundle(
-    tmp_path: Path,
-) -> None:
-    """Campaign fitting should persist a reusable artifact bundle under models/."""
-
-    campaigns_root = tmp_path / "campaigns"
-    _write_synthetic_campaign(campaigns_root / "training-campaign")
-    preparation = prepare_campaign_calibration_dataset(
-        "training-campaign",
+    _write_campaign_fixture(
+        campaigns_root / "campaign-a",
+        central_freq_mhz=98.0,
+        span_mhz=20.0,
+        rbw_khz=10.0,
+    )
+    _write_campaign_fixture(
+        campaigns_root / "campaign-b",
+        central_freq_mhz=104.0,
+        span_mhz=18.0,
+        rbw_khz=15.0,
+        sensor_offsets_db=(0.10, -0.08, 0.15, 9.5),
+    )
+    preparation = prepare_calibration_corpus(
         campaigns_root=campaigns_root,
         ranking_histogram_bins=8,
         distribution_histogram_bins=32,
         alignment_tolerance_ms=80,
     )
-    output_dir = build_campaign_calibration_output_dir(
-        preparation.campaign_label,
+    output_dir = build_corpus_calibration_output_dir(
+        "synthetic-corpus",
         models_root=tmp_path / "models",
     )
 
-    fit_result = fit_and_save_campaign_calibration_model(
+    fit_result = fit_and_save_calibration_corpus_model(
         preparation=preparation,
         output_dir=output_dir,
-        fit_config={
-            "n_iterations": 3,
-            "lambda_gain_smooth": 10.0,
-            "lambda_noise_smooth": 10.0,
-            "lambda_gain_reference": 3.0,
-            "lambda_noise_reference": 20.0,
-            "lambda_reliable_anchor": 1.0,
-            "reliable_weight_boost": 1.05,
-            "low_information_threshold_ratio": 0.10,
-            "low_information_weight": 0.05,
-        },
-        test_fraction=0.4,
-        split_strategy="random",
-        split_random_seed=0,
+        basis_config=FrequencyBasisConfig(
+            n_gain_basis=5,
+            n_floor_basis=4,
+            n_variance_basis=4,
+        ),
+        model_config=PersistentModelConfig(
+            sensor_embedding_dim=2,
+            configuration_latent_dim=2,
+        ),
+        fit_config=TwoLevelFitConfig(
+            n_outer_iterations=2,
+            n_gradient_steps=4,
+            learning_rate=0.02,
+            sigma_min=1.0e-8,
+            lambda_delta_gain_smooth=0.1,
+            lambda_delta_floor_smooth=0.1,
+            lambda_delta_variance_smooth=0.1,
+            lambda_delta_gain_shrink=0.05,
+            lambda_delta_floor_shrink=0.05,
+            lambda_delta_variance_shrink=0.05,
+            lambda_reliable_sensor_anchor=0.02,
+            gradient_clip_norm=2.0,
+            random_seed=1,
+        ),
     )
-    loaded = load_spectral_calibration_artifact(output_dir)
+    loaded = load_two_level_calibration_artifact(output_dir)
 
-    assert loaded.manifest["response_dir"] is None
-    assert loaded.manifest["acquisition_dir"] == str(preparation.campaign_dir.resolve())
-    assert loaded.manifest["reference_sensor_id"] == (
-        preparation.alignment_diagnostics.anchor_sensor_id
-    )
-    assert loaded.manifest["reliable_sensor_id"] == preparation.reliable_sensor_id
-    assert loaded.manifest["excluded_sensor_ids"] == []
-    assert loaded.manifest["dataset"]["sensor_ids"] == list(
-        preparation.calibration_dataset.sensor_ids
-    )
-    assert loaded.result.sensor_ids == preparation.calibration_dataset.sensor_ids
-    assert loaded.manifest["extra_summary"]["corrected_to_raw_dispersion_ratio"] > 0.0
-    assert loaded.manifest["extra_summary"]["distribution_outlier_count"] == 1.0
+    assert preparation.corpus.sensor_ids == ("Node1", "Node2", "Node3", "Node9")
+    assert len(preparation.prepared_campaigns) == 2
     assert fit_result.fit_duration_s >= 0.0
-    assert len(fit_result.validation.sensor_rows) == len(
-        preparation.calibration_dataset.sensor_ids
-    )
+    assert loaded.manifest["training_summary"]["n_campaigns"] == 2
+    assert len(loaded.result.campaign_states) == 2
 
 
-def test_build_campaign_deployment_inputs_reorders_shared_sensors(
-    tmp_path: Path,
+def _write_campaign_fixture(
+    campaign_dir: Path,
+    central_freq_mhz: float,
+    span_mhz: float,
+    rbw_khz: float,
+    sensor_offsets_db: tuple[float, float, float, float] = (0.08, -0.05, 0.15, 12.0),
 ) -> None:
-    """Deployment inputs should follow the stored model order on shared sensors."""
-
-    campaigns_root = tmp_path / "campaigns"
-    _write_synthetic_campaign(campaigns_root / "training-campaign")
-    _write_deployment_campaign(campaigns_root / "deployment-campaign")
-
-    training_preparation = prepare_campaign_calibration_dataset(
-        "training-campaign",
-        campaigns_root=campaigns_root,
-        ranking_histogram_bins=8,
-        distribution_histogram_bins=32,
-        alignment_tolerance_ms=80,
-    )
-    fit_result = fit_and_save_campaign_calibration_model(
-        preparation=training_preparation,
-        output_dir=tmp_path / "models" / "training-campaign",
-        fit_config={
-            "n_iterations": 2,
-            "lambda_gain_smooth": 10.0,
-            "lambda_noise_smooth": 10.0,
-            "lambda_gain_reference": 3.0,
-            "lambda_noise_reference": 20.0,
-            "lambda_reliable_anchor": 1.0,
-            "reliable_weight_boost": 1.05,
-            "low_information_threshold_ratio": 0.10,
-            "low_information_weight": 0.05,
-        },
-        test_fraction=0.4,
-        split_strategy="tail",
-    )
-    deployment_preparation = prepare_campaign_calibration_dataset(
-        "deployment-campaign",
-        campaigns_root=campaigns_root,
-        alignment_tolerance_ms=80,
-    )
-
-    deployment_inputs = build_campaign_deployment_inputs(
-        preparation=deployment_preparation,
-        trained_result=load_spectral_calibration_artifact(
-            fit_result.artifact.output_dir
-        ).result,
-    )
-
-    assert deployment_inputs.shared_sensor_ids == ("Node1", "Node3")
-    assert deployment_inputs.observations_power.shape == (2, 4, 8)
-    assert np.allclose(
-        deployment_inputs.observations_power[0],
-        deployment_preparation.calibration_dataset.observations_power[0],
-    )
-    assert np.allclose(
-        deployment_inputs.observations_power[1],
-        deployment_preparation.calibration_dataset.observations_power[2],
-    )
-
-
-def _write_synthetic_campaign(campaign_dir: Path) -> None:
-    """Create a deterministic campaign fixture with one clear histogram outlier."""
+    """Create one deterministic campaign directory with metadata and sensor CSVs."""
 
     campaign_dir.mkdir(parents=True)
+    _write_metadata_csv(
+        campaign_dir / "metadata.csv",
+        {
+            "campaign_label": campaign_dir.name,
+            "start_date": "03/10/2026",
+            "stop_date": "03/10/2026",
+            "start_time": "00:00:00",
+            "stop_time": "06:00:00",
+            "acquisition_freq_minutes": "2",
+            "central_freq_MHz": f"{central_freq_mhz}",
+            "span_MHz": f"{span_mhz}",
+            "lna_gain_dB": "0",
+            "vga_gain_dB": "62",
+            "rbw_kHz": f"{rbw_khz}",
+            "antenna_amp": "true",
+        },
+    )
+
     base_records = np.asarray(
         [
             [-63.0, -61.0, -58.0, -54.0, -50.0, -49.0, -52.0, -57.0],
@@ -214,98 +191,75 @@ def _write_synthetic_campaign(campaign_dir: Path) -> None:
         ],
         dtype=np.float64,
     )
-
-    # Keep three sensors close to the latent field and shift one sensor into a
-    # clearly incompatible distribution so the ranking and outlier logic are exercised.
-    _write_campaign_csv(
-        campaign_dir / "Node1.csv",
-        timestamps_ms=[1_000, 2_000, 3_000, 4_000, 5_000],
-        observations_db=(base_records + 0.08).tolist(),
+    sensor_ids = ("Node1", "Node2", "Node3", "Node9")
+    timestamp_series = (
+        [1_000, 2_000, 3_000, 4_000, 5_000],
+        [1_030, 2_030, 3_030, 4_030, 5_030],
+        [980, 1_980, 2_980, 3_980, 4_980],
+        [1_050, 2_050, 3_050, 4_050, 5_050],
     )
-    _write_campaign_csv(
-        campaign_dir / "Node2.csv",
-        timestamps_ms=[1_030, 2_030, 3_030, 4_030, 5_030],
-        observations_db=(base_records - 0.05).tolist(),
-    )
-    _write_campaign_csv(
-        campaign_dir / "Node3.csv",
-        timestamps_ms=[980, 1_980, 2_980, 3_980, 4_980],
-        observations_db=(base_records + 0.15).tolist(),
-    )
-    _write_campaign_csv(
-        campaign_dir / "Node9.csv",
-        timestamps_ms=[1_050, 2_050, 3_050, 4_050, 5_050],
-        observations_db=(np.flip(base_records, axis=1) + 12.0).tolist(),
-    )
-
-
-def _write_deployment_campaign(campaign_dir: Path) -> None:
-    """Create a second campaign with partial overlap against the training sensors."""
-
-    campaign_dir.mkdir(parents=True)
-    base_records = np.asarray(
-        [
-            [-62.8, -60.8, -57.8, -53.8, -49.8, -48.9, -51.8, -56.9],
-            [-63.2, -61.0, -58.1, -54.1, -50.1, -49.1, -52.1, -57.2],
-            [-62.4, -60.5, -57.5, -53.5, -49.6, -48.7, -51.5, -56.6],
-            [-63.0, -60.9, -57.9, -53.9, -49.9, -49.0, -51.9, -57.0],
-        ],
-        dtype=np.float64,
-    )
-
-    _write_campaign_csv(
-        campaign_dir / "Node1.csv",
-        timestamps_ms=[11_000, 12_000, 13_000, 14_000],
-        observations_db=(base_records + 0.10).tolist(),
-    )
-    _write_campaign_csv(
-        campaign_dir / "Node3.csv",
-        timestamps_ms=[11_020, 12_020, 13_020, 14_020],
-        observations_db=(base_records + 0.18).tolist(),
-    )
-    _write_campaign_csv(
-        campaign_dir / "Node10.csv",
-        timestamps_ms=[10_980, 11_980, 12_980, 13_980],
-        observations_db=(base_records + 4.0).tolist(),
-    )
+    for sensor_id, timestamps_ms, offset_db in zip(
+        sensor_ids,
+        timestamp_series,
+        sensor_offsets_db,
+        strict=True,
+    ):
+        observations_db = (
+            np.flip(base_records, axis=1) + offset_db
+            if sensor_id == "Node9"
+            else base_records + offset_db
+        )
+        _write_sensor_csv(
+            campaign_dir / f"{sensor_id}.csv",
+            timestamps_ms=timestamps_ms,
+            observations_db=observations_db,
+        )
 
 
-def _write_campaign_csv(
-    path: Path,  # Output CSV path
-    timestamps_ms: list[int],  # Row timestamps [ms]
-    observations_db: list[list[float]],  # PSD rows in dB
+def _write_metadata_csv(path: Path, row: dict[str, str]) -> None:
+    """Write one-row campaign metadata CSV."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=list(row))
+        writer.writeheader()
+        writer.writerow(row)
+
+
+def _write_sensor_csv(
+    path: Path,
+    timestamps_ms: list[int],
+    observations_db: np.ndarray,
 ) -> None:
-    """Write a campaign-style CSV with the API client schema."""
+    """Write one sensor acquisition CSV compatible with the repository schema."""
+
+    rows = []
+    for row_index, (timestamp_ms, power_db) in enumerate(
+        zip(timestamps_ms, observations_db, strict=True),
+        start=1,
+    ):
+        rows.append(
+            {
+                "id": row_index,
+                "mac": f"00:00:00:00:00:{row_index:02d}",
+                "campaign_id": 1,
+                "pxx": json.dumps([float(value) for value in power_db]),
+                "start_freq_hz": 88_000_000,
+                "end_freq_hz": 108_000_000,
+                "timestamp": timestamp_ms,
+                "lat": 0.0,
+                "lng": 0.0,
+                "excursion_peak_to_peak_hz": 0.0,
+                "excursion_peak_deviation_hz": 0.0,
+                "excursion_rms_deviation_hz": 0.0,
+                "depth_peak_to_peak": 0.0,
+                "depth_peak_deviation": 0.0,
+                "depth_rms_deviation": 0.0,
+                "created_at": timestamp_ms,
+            }
+        )
 
     with path.open("w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.DictWriter(
-            csv_file,
-            fieldnames=(
-                "id",
-                "mac",
-                "campaign_id",
-                "pxx",
-                "start_freq_hz",
-                "end_freq_hz",
-                "timestamp",
-                "created_at",
-            ),
-        )
+        writer = csv.DictWriter(csv_file, fieldnames=list(rows[0]))
         writer.writeheader()
-
-        for row_index, (timestamp_ms, power_db) in enumerate(
-            zip(timestamps_ms, observations_db, strict=True),
-            start=1,
-        ):
-            writer.writerow(
-                {
-                    "id": row_index,
-                    "mac": f"mac-{path.stem.lower()}",
-                    "campaign_id": 999,
-                    "pxx": json.dumps(power_db),
-                    "start_freq_hz": 88.0e6,
-                    "end_freq_hz": 108.0e6,
-                    "timestamp": timestamp_ms,
-                    "created_at": "",
-                }
-            )
+        writer.writerows(rows)

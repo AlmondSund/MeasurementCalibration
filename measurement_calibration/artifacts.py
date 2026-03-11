@@ -1,15 +1,15 @@
-"""Filesystem artifact helpers for fitted spectral calibration models.
+"""Artifact persistence for the two-level configuration-conditional model.
 
-This module keeps persistence and report-generation concerns at the project
-boundary. The numerical model remains in :mod:`measurement_calibration.
-spectral_calibration`, while this module serializes fitted results into a
-stable on-disk layout that can be inspected and reloaded later.
+This module keeps filesystem side effects at the project boundary. The
+numerical model remains in :mod:`measurement_calibration.spectral_calibration`;
+this module serializes fitted results into a stable on-disk bundle that can be
+reloaded for deployment or inspection.
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import csv
 import json
@@ -19,33 +19,22 @@ from typing import Any
 import numpy as np
 
 from .spectral_calibration import (
-    CalibrationDataset,
-    SpectralCalibrationResult,
+    CampaignCalibrationState,
+    CampaignConfiguration,
+    FrequencyBasisConfig,
+    PersistentModelConfig,
+    TwoLevelCalibrationResult,
+    TwoLevelFitConfig,
     power_linear_to_db,
 )
 
 
-MODEL_SCHEMA_VERSION = 1
+MODEL_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
 class SavedCalibrationArtifact:
-    """Paths and metadata for one saved calibration artifact.
-
-    Parameters
-    ----------
-    output_dir:
-        Directory that contains every generated artifact file.
-    manifest_path:
-        JSON manifest path with provenance, fit configuration, and summary
-        metrics.
-    parameters_path:
-        Compressed NumPy archive with the fitted calibration arrays.
-    sensor_summary_path:
-        CSV path with one human-readable summary row per calibrated sensor.
-    manifest:
-        Parsed manifest dictionary that was written to disk.
-    """
+    """Paths and metadata for one saved calibration artifact bundle."""
 
     output_dir: Path
     manifest_path: Path
@@ -56,87 +45,30 @@ class SavedCalibrationArtifact:
 
 @dataclass(frozen=True)
 class LoadedCalibrationArtifact:
-    """In-memory representation of a previously saved calibration artifact.
-
-    Parameters
-    ----------
-    output_dir:
-        Directory that contains the artifact files.
-    manifest_path:
-        JSON manifest path.
-    parameters_path:
-        Compressed NumPy archive path.
-    sensor_summary_path:
-        CSV summary path. The file may not exist for legacy artifacts.
-    manifest:
-        Parsed manifest dictionary loaded from disk.
-    result:
-        Reconstructed spectral calibration result.
-    """
+    """In-memory representation of a previously saved artifact bundle."""
 
     output_dir: Path
     manifest_path: Path
     parameters_path: Path
     sensor_summary_path: Path
     manifest: dict[str, Any]
-    result: SpectralCalibrationResult
+    result: TwoLevelCalibrationResult
 
 
-def save_spectral_calibration_artifact(
+def save_two_level_calibration_artifact(
     output_dir: Path,  # Destination directory for the artifact bundle
-    result: SpectralCalibrationResult,  # Fitted calibration parameters
-    dataset: CalibrationDataset,  # Dataset used to produce the fitted model
-    acquisition_dir: Path,  # Source acquisition directory
-    response_dir: Path | None,  # Source nominal-response directory when available
-    reference_sensor_id: str,  # Alignment reference sensor
-    reliable_sensor_id: str,  # Softly anchored sensor during fitting
-    excluded_sensor_ids: Collection[str],  # Sensors removed before training
-    fit_config: Mapping[
-        str, int | float | None
-    ],  # Fully resolved fitting configuration
-    extra_summary: Mapping[str, int | float] | None = None,  # Optional run metrics
-) -> SavedCalibrationArtifact:  # Paths and manifest for the stored artifact
-    """Persist a fitted calibration result as a self-describing artifact bundle.
-
-    Parameters
-    ----------
-    output_dir:
-        Directory where the artifact bundle will be written. It is created when
-        needed, and the standard artifact files are overwritten in place.
-    result:
-        Fitted calibration result to serialize.
-    dataset:
-        Calibration dataset that supplied the aligned observations and metadata.
-    acquisition_dir:
-        Directory containing the raw acquisition CSV files used during loading.
-    response_dir:
-        Directory containing the nominal response CSV files used during loading.
-        It may be omitted for RBW campaigns that do not have external nominal
-        response curves and therefore use an all-ones nominal-gain baseline.
-    reference_sensor_id:
-        Sensor that defined the alignment timeline.
-    reliable_sensor_id:
-        Sensor softly anchored during fitting.
-    excluded_sensor_ids:
-        Sensors excluded before dataset construction.
-    fit_config:
-        Fully resolved numerical fit configuration used to generate ``result``.
-        Persisting the complete effective configuration keeps audit-critical
-        behavior out of hidden function defaults.
-    extra_summary:
-        Optional scalar run metrics, for example fit duration or holdout
-        fraction, that should appear in the manifest summary.
-
-    Returns
-    -------
-    SavedCalibrationArtifact
-        Artifact paths plus the manifest dictionary that was written.
+    result: TwoLevelCalibrationResult,  # Fitted calibration model
+    extra_summary: dict[str, int | float] | None = None,
+) -> SavedCalibrationArtifact:
+    """Persist a fitted two-level calibration model to disk.
 
     Side Effects
     ------------
-    Creates ``output_dir`` if needed and writes three files:
-    ``manifest.json``, ``calibration_parameters.npz``, and
-    ``sensor_summary.csv``.
+    Creates ``output_dir`` when needed and writes:
+
+    - ``manifest.json`` with configuration, provenance, and high-level summary;
+    - ``calibration_parameters.npz`` with the trainable arrays and campaign states;
+    - ``sensor_summary.csv`` with compact per-sensor training statistics.
     """
 
     output_dir = Path(output_dir)
@@ -148,40 +80,14 @@ def save_spectral_calibration_artifact(
 
     np.savez_compressed(
         parameters_path,
-        sensor_ids=np.asarray(result.sensor_ids),
-        frequency_hz=result.frequency_hz,
-        gain_power=result.gain_power,
-        additive_noise_power=result.additive_noise_power,
-        residual_variance_power2=result.residual_variance_power2,
-        latent_spectra_power=result.latent_spectra_power,
-        nominal_gain_power=result.nominal_gain_power,
-        correction_gain_power=result.correction_gain_power,
-        train_indices=result.train_indices,
-        test_indices=result.test_indices,
-        objective_history=result.objective_history,
-        latent_variation_power2=result.latent_variation_power2,
-        frequency_information_weight=result.frequency_information_weight,
-        information_weight=result.information_weight,
-        frequency_low_information_mask=result.frequency_low_information_mask,
-        low_information_mask=result.low_information_mask,
-        gain_at_correction_bound_mask=result.gain_at_correction_bound_mask,
-        noise_zero_mask=result.noise_zero_mask,
-        solver_nonfinite_step_count=result.solver_nonfinite_step_count,
+        **_build_parameter_archive_payload(result),
     )
-
     write_sensor_calibration_summary_csv(sensor_summary_path, result)
 
     manifest = _build_artifact_manifest(
         result=result,
-        dataset=dataset,
-        acquisition_dir=acquisition_dir,
-        response_dir=response_dir,
-        reference_sensor_id=reference_sensor_id,
-        reliable_sensor_id=reliable_sensor_id,
-        excluded_sensor_ids=excluded_sensor_ids,
-        fit_config=fit_config,
-        parameters_path=parameters_path.name,
-        sensor_summary_path=sensor_summary_path.name,
+        parameters_file=parameters_path.name,
+        sensor_summary_file=sensor_summary_path.name,
         extra_summary=extra_summary,
     )
     manifest_path.write_text(
@@ -198,28 +104,10 @@ def save_spectral_calibration_artifact(
     )
 
 
-def load_spectral_calibration_artifact(
-    output_dir: Path,  # Directory that contains the artifact bundle
-) -> LoadedCalibrationArtifact:  # Reconstructed result and manifest
-    """Load a previously saved calibration artifact from disk.
-
-    Parameters
-    ----------
-    output_dir:
-        Directory that contains ``manifest.json`` and the parameter archive.
-
-    Returns
-    -------
-    LoadedCalibrationArtifact
-        Parsed manifest plus the reconstructed spectral calibration result.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the manifest or parameter archive is missing.
-    ValueError
-        If the artifact schema version is unsupported.
-    """
+def load_two_level_calibration_artifact(
+    output_dir: Path,  # Directory that contains the saved artifact bundle
+) -> LoadedCalibrationArtifact:
+    """Load a previously saved two-level calibration artifact from disk."""
 
     output_dir = Path(output_dir)
     manifest_path = output_dir / "manifest.json"
@@ -241,51 +129,47 @@ def load_spectral_calibration_artifact(
         )
 
     with np.load(parameters_path, allow_pickle=False) as arrays:
-        result = SpectralCalibrationResult(
+        campaign_states = tuple(
+            _load_campaign_state(
+                arrays=arrays,
+                campaign_manifest=campaign_manifest,
+                campaign_index=campaign_index,
+            )
+            for campaign_index, campaign_manifest in enumerate(manifest["campaigns"])
+        )
+        result = TwoLevelCalibrationResult(
             sensor_ids=tuple(str(sensor_id) for sensor_id in arrays["sensor_ids"]),
-            frequency_hz=np.asarray(arrays["frequency_hz"], dtype=np.float64),
-            gain_power=np.asarray(arrays["gain_power"], dtype=np.float64),
-            additive_noise_power=np.asarray(
-                arrays["additive_noise_power"], dtype=np.float64
+            sensor_reference_weight=np.asarray(
+                arrays["sensor_reference_weight"], dtype=np.float64
             ),
-            residual_variance_power2=np.asarray(
-                arrays["residual_variance_power2"], dtype=np.float64
+            basis_config=FrequencyBasisConfig(**manifest["basis_config"]),
+            model_config=PersistentModelConfig(**manifest["model_config"]),
+            fit_config=TwoLevelFitConfig(**manifest["fit_config"]),
+            configuration_feature_mean=np.asarray(
+                arrays["configuration_feature_mean"], dtype=np.float64
             ),
-            latent_spectra_power=np.asarray(
-                arrays["latent_spectra_power"], dtype=np.float64
+            configuration_feature_scale=np.asarray(
+                arrays["configuration_feature_scale"], dtype=np.float64
             ),
-            nominal_gain_power=np.asarray(
-                arrays["nominal_gain_power"], dtype=np.float64
+            frequency_min_hz=float(arrays["frequency_min_hz"][0]),
+            frequency_max_hz=float(arrays["frequency_max_hz"][0]),
+            sensor_embeddings=np.asarray(arrays["sensor_embeddings"], dtype=np.float64),
+            configuration_encoder_weight=np.asarray(
+                arrays["configuration_encoder_weight"], dtype=np.float64
             ),
-            correction_gain_power=np.asarray(
-                arrays["correction_gain_power"], dtype=np.float64
+            configuration_encoder_bias=np.asarray(
+                arrays["configuration_encoder_bias"], dtype=np.float64
             ),
-            train_indices=np.asarray(arrays["train_indices"], dtype=np.int64),
-            test_indices=np.asarray(arrays["test_indices"], dtype=np.int64),
+            gain_head_weight=np.asarray(arrays["gain_head_weight"], dtype=np.float64),
+            gain_head_bias=np.asarray(arrays["gain_head_bias"], dtype=np.float64),
+            floor_head_weight=np.asarray(arrays["floor_head_weight"], dtype=np.float64),
+            floor_head_bias=np.asarray(arrays["floor_head_bias"], dtype=np.float64),
+            variance_head_weight=np.asarray(
+                arrays["variance_head_weight"], dtype=np.float64
+            ),
+            variance_head_bias=np.asarray(arrays["variance_head_bias"], dtype=np.float64),
+            campaign_states=campaign_states,
             objective_history=np.asarray(arrays["objective_history"], dtype=np.float64),
-            latent_variation_power2=np.asarray(
-                arrays["latent_variation_power2"], dtype=np.float64
-            ),
-            frequency_information_weight=np.asarray(
-                arrays["frequency_information_weight"], dtype=np.float64
-            ),
-            information_weight=np.asarray(
-                arrays["information_weight"], dtype=np.float64
-            ),
-            frequency_low_information_mask=np.asarray(
-                arrays["frequency_low_information_mask"], dtype=bool
-            ),
-            low_information_mask=np.asarray(arrays["low_information_mask"], dtype=bool),
-            gain_at_correction_bound_mask=np.asarray(
-                arrays["gain_at_correction_bound_mask"], dtype=bool
-            ),
-            noise_zero_mask=np.asarray(arrays["noise_zero_mask"], dtype=bool),
-            solver_nonfinite_step_count=np.asarray(
-                arrays["solver_nonfinite_step_count"]
-                if "solver_nonfinite_step_count" in arrays
-                else np.zeros(len(arrays["sensor_ids"]), dtype=np.int64),
-                dtype=np.int64,
-            ),
         )
 
     sensor_summary_path = output_dir / str(manifest["sensor_summary_file"])
@@ -301,14 +185,9 @@ def load_spectral_calibration_artifact(
 
 def write_sensor_calibration_summary_csv(
     output_path: Path,  # CSV destination path
-    result: SpectralCalibrationResult,  # Fitted calibration result to summarize
-) -> None:  # No return value
-    """Write one human-readable calibration summary row per sensor.
-
-    The CSV is meant for quick inspection. It reports compact per-sensor
-    statistics rather than the full frequency-resolved model arrays, which stay
-    in the compressed NumPy archive.
-    """
+    result: TwoLevelCalibrationResult,  # Fitted model to summarize
+) -> None:
+    """Write one compact training summary row per registered sensor."""
 
     output_path = Path(output_path)
     rows = _build_sensor_summary_rows(result)
@@ -318,78 +197,216 @@ def write_sensor_calibration_summary_csv(
         writer.writerows(rows)
 
 
-def _build_artifact_manifest(
-    result: SpectralCalibrationResult,
-    dataset: CalibrationDataset,
-    acquisition_dir: Path,
-    response_dir: Path | None,
-    reference_sensor_id: str,
-    reliable_sensor_id: str,
-    excluded_sensor_ids: Collection[str],
-    fit_config: Mapping[str, int | float | None],
-    parameters_path: str,
-    sensor_summary_path: str,
-    extra_summary: Mapping[str, int | float] | None,
+def _build_parameter_archive_payload(
+    result: TwoLevelCalibrationResult,
 ) -> dict[str, Any]:
-    """Build the JSON manifest dictionary for a saved artifact."""
+    """Flatten a fitted result into NPZ-compatible arrays."""
+
+    payload: dict[str, Any] = {
+        "sensor_ids": np.asarray(result.sensor_ids),
+        "sensor_reference_weight": np.asarray(
+            result.sensor_reference_weight, dtype=np.float64
+        ),
+        "configuration_feature_mean": np.asarray(
+            result.configuration_feature_mean, dtype=np.float64
+        ),
+        "configuration_feature_scale": np.asarray(
+            result.configuration_feature_scale, dtype=np.float64
+        ),
+        "frequency_min_hz": np.asarray([result.frequency_min_hz], dtype=np.float64),
+        "frequency_max_hz": np.asarray([result.frequency_max_hz], dtype=np.float64),
+        "sensor_embeddings": np.asarray(result.sensor_embeddings, dtype=np.float64),
+        "configuration_encoder_weight": np.asarray(
+            result.configuration_encoder_weight, dtype=np.float64
+        ),
+        "configuration_encoder_bias": np.asarray(
+            result.configuration_encoder_bias, dtype=np.float64
+        ),
+        "gain_head_weight": np.asarray(result.gain_head_weight, dtype=np.float64),
+        "gain_head_bias": np.asarray(result.gain_head_bias, dtype=np.float64),
+        "floor_head_weight": np.asarray(result.floor_head_weight, dtype=np.float64),
+        "floor_head_bias": np.asarray(result.floor_head_bias, dtype=np.float64),
+        "variance_head_weight": np.asarray(
+            result.variance_head_weight, dtype=np.float64
+        ),
+        "variance_head_bias": np.asarray(result.variance_head_bias, dtype=np.float64),
+        "objective_history": np.asarray(result.objective_history, dtype=np.float64),
+    }
+    for campaign_index, campaign_state in enumerate(result.campaign_states):
+        payload[f"campaign_{campaign_index}_sensor_ids"] = np.asarray(
+            campaign_state.sensor_ids
+        )
+        payload[f"campaign_{campaign_index}_frequency_hz"] = np.asarray(
+            campaign_state.frequency_hz, dtype=np.float64
+        )
+        payload[f"campaign_{campaign_index}_latent_spectra_power"] = np.asarray(
+            campaign_state.latent_spectra_power, dtype=np.float64
+        )
+        payload[f"campaign_{campaign_index}_persistent_log_gain"] = np.asarray(
+            campaign_state.persistent_log_gain, dtype=np.float64
+        )
+        payload[
+            f"campaign_{campaign_index}_persistent_floor_parameter"
+        ] = np.asarray(campaign_state.persistent_floor_parameter, dtype=np.float64)
+        payload[
+            f"campaign_{campaign_index}_persistent_variance_parameter"
+        ] = np.asarray(campaign_state.persistent_variance_parameter, dtype=np.float64)
+        payload[f"campaign_{campaign_index}_deviation_log_gain"] = np.asarray(
+            campaign_state.deviation_log_gain, dtype=np.float64
+        )
+        payload[
+            f"campaign_{campaign_index}_deviation_floor_parameter"
+        ] = np.asarray(campaign_state.deviation_floor_parameter, dtype=np.float64)
+        payload[
+            f"campaign_{campaign_index}_deviation_variance_parameter"
+        ] = np.asarray(campaign_state.deviation_variance_parameter, dtype=np.float64)
+        payload[f"campaign_{campaign_index}_gain_power"] = np.asarray(
+            campaign_state.gain_power, dtype=np.float64
+        )
+        payload[f"campaign_{campaign_index}_additive_noise_power"] = np.asarray(
+            campaign_state.additive_noise_power, dtype=np.float64
+        )
+        payload[
+            f"campaign_{campaign_index}_residual_variance_power2"
+        ] = np.asarray(campaign_state.residual_variance_power2, dtype=np.float64)
+        payload[f"campaign_{campaign_index}_objective_value"] = np.asarray(
+            [campaign_state.objective_value], dtype=np.float64
+        )
+    return payload
+
+
+def _build_artifact_manifest(
+    result: TwoLevelCalibrationResult,
+    parameters_file: str,
+    sensor_summary_file: str,
+    extra_summary: dict[str, int | float] | None,
+) -> dict[str, Any]:
+    """Build the JSON manifest dictionary for one saved artifact."""
 
     manifest: dict[str, Any] = {
         "schema_version": MODEL_SCHEMA_VERSION,
-        "artifact_type": "spectral_calibration_model",
+        "artifact_type": "configuration_conditional_calibration_model",
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
-        "parameters_file": parameters_path,
-        "sensor_summary_file": sensor_summary_path,
-        "acquisition_dir": str(Path(acquisition_dir).resolve()),
-        "response_dir": (
-            None if response_dir is None else str(Path(response_dir).resolve())
-        ),
-        "reference_sensor_id": reference_sensor_id,
-        "reliable_sensor_id": reliable_sensor_id,
-        "excluded_sensor_ids": sorted(
-            str(sensor_id) for sensor_id in excluded_sensor_ids
-        ),
-        "fit_config": _normalize_scalar_mapping(fit_config),
-        "fit_split": {
-            "train_indices": [int(index) for index in result.train_indices],
-            "test_indices": [int(index) for index in result.test_indices],
+        "parameters_file": parameters_file,
+        "sensor_summary_file": sensor_summary_file,
+        "basis_config": asdict(result.basis_config),
+        "model_config": asdict(result.model_config),
+        "fit_config": asdict(result.fit_config),
+        "sensor_ids": list(result.sensor_ids),
+        "sensor_reference_weight": {
+            sensor_id: float(weight)
+            for sensor_id, weight in zip(
+                result.sensor_ids,
+                result.sensor_reference_weight,
+                strict=True,
+            )
         },
-        "dataset": {
-            "sensor_ids": list(dataset.sensor_ids),
-            "n_sensors": len(dataset.sensor_ids),
-            "n_experiments": int(dataset.observations_power.shape[1]),
-            "n_frequencies": int(dataset.frequency_hz.size),
-            "selected_band_hz": [
-                float(dataset.selected_band_hz[0]),
-                float(dataset.selected_band_hz[1]),
-            ],
-            "sensor_shifts": {
-                sensor_id: int(dataset.sensor_shifts[sensor_id])
-                for sensor_id in dataset.sensor_ids
-            },
-            "alignment_median_error_ms": {
-                sensor_id: float(dataset.alignment_median_error_ms[sensor_id])
-                for sensor_id in dataset.sensor_ids
-            },
-            "experiment_timestamp_range_ms": [
-                int(dataset.experiment_timestamps_ms[0]),
-                int(dataset.experiment_timestamps_ms[-1]),
-            ],
-            "selected_rows_per_sensor": {
-                sensor_id: int(dataset.source_row_indices[sensor_id].size)
-                for sensor_id in dataset.sensor_ids
-            },
-        },
-        "result_summary": _result_summary(result),
+        "training_summary": _training_summary(result),
+        "campaigns": [_campaign_manifest_entry(campaign_state) for campaign_state in result.campaign_states],
     }
     if extra_summary is not None:
         manifest["extra_summary"] = _normalize_scalar_mapping(extra_summary)
     return manifest
 
 
+def _training_summary(
+    result: TwoLevelCalibrationResult,
+) -> dict[str, int | float]:
+    """Compute compact artifact-level summary metrics."""
+
+    return {
+        "n_campaigns": len(result.campaign_states),
+        "n_sensors": len(result.sensor_ids),
+        "objective_start": float(result.objective_history[0]),
+        "objective_end": float(result.objective_history[-1]),
+        "mean_campaign_objective": float(
+            np.mean([campaign_state.objective_value for campaign_state in result.campaign_states])
+        ),
+    }
+
+
+def _campaign_manifest_entry(
+    campaign_state: CampaignCalibrationState,
+) -> dict[str, Any]:
+    """Build the manifest entry for one campaign state."""
+
+    return {
+        "campaign_label": campaign_state.campaign_label,
+        "sensor_ids": list(campaign_state.sensor_ids),
+        "n_acquisitions": int(campaign_state.latent_spectra_power.shape[0]),
+        "n_frequencies": int(campaign_state.frequency_hz.size),
+        "reliable_sensor_id": campaign_state.reliable_sensor_id,
+        "configuration": asdict(campaign_state.configuration),
+        "objective_value": float(campaign_state.objective_value),
+    }
+
+
+def _load_campaign_state(
+    arrays: Any,
+    campaign_manifest: Mapping[str, Any],
+    campaign_index: int,
+) -> CampaignCalibrationState:
+    """Reconstruct one campaign state from the NPZ archive and manifest."""
+
+    return CampaignCalibrationState(
+        campaign_label=str(campaign_manifest["campaign_label"]),
+        sensor_ids=tuple(
+            str(sensor_id)
+            for sensor_id in arrays[f"campaign_{campaign_index}_sensor_ids"]
+        ),
+        frequency_hz=np.asarray(
+            arrays[f"campaign_{campaign_index}_frequency_hz"], dtype=np.float64
+        ),
+        configuration=CampaignConfiguration(**campaign_manifest["configuration"]),
+        reliable_sensor_id=campaign_manifest["reliable_sensor_id"],
+        latent_spectra_power=np.asarray(
+            arrays[f"campaign_{campaign_index}_latent_spectra_power"],
+            dtype=np.float64,
+        ),
+        persistent_log_gain=np.asarray(
+            arrays[f"campaign_{campaign_index}_persistent_log_gain"],
+            dtype=np.float64,
+        ),
+        persistent_floor_parameter=np.asarray(
+            arrays[f"campaign_{campaign_index}_persistent_floor_parameter"],
+            dtype=np.float64,
+        ),
+        persistent_variance_parameter=np.asarray(
+            arrays[f"campaign_{campaign_index}_persistent_variance_parameter"],
+            dtype=np.float64,
+        ),
+        deviation_log_gain=np.asarray(
+            arrays[f"campaign_{campaign_index}_deviation_log_gain"],
+            dtype=np.float64,
+        ),
+        deviation_floor_parameter=np.asarray(
+            arrays[f"campaign_{campaign_index}_deviation_floor_parameter"],
+            dtype=np.float64,
+        ),
+        deviation_variance_parameter=np.asarray(
+            arrays[f"campaign_{campaign_index}_deviation_variance_parameter"],
+            dtype=np.float64,
+        ),
+        gain_power=np.asarray(
+            arrays[f"campaign_{campaign_index}_gain_power"],
+            dtype=np.float64,
+        ),
+        additive_noise_power=np.asarray(
+            arrays[f"campaign_{campaign_index}_additive_noise_power"],
+            dtype=np.float64,
+        ),
+        residual_variance_power2=np.asarray(
+            arrays[f"campaign_{campaign_index}_residual_variance_power2"],
+            dtype=np.float64,
+        ),
+        objective_value=float(arrays[f"campaign_{campaign_index}_objective_value"][0]),
+    )
+
+
 def _normalize_scalar_mapping(
-    values: Mapping[str, int | float | None],  # Mapping with NumPy or Python scalars
+    values: Mapping[str, int | float | None],
 ) -> dict[str, int | float | None]:
-    """Convert a scalar mapping into a JSON-friendly plain-Python dictionary."""
+    """Convert scalar mappings into a plain-JSON representation."""
 
     normalized: dict[str, int | float | None] = {}
     for key, value in values.items():
@@ -401,75 +418,76 @@ def _normalize_scalar_mapping(
             normalized[key] = float(value)
         else:
             raise TypeError(
-                "Artifact manifest supports only integer, floating-point, and "
-                "null "
+                "Artifact manifest supports only integer, floating-point, and null "
                 f"scalars, but {key!r} received {type(value).__name__}."
             )
     return normalized
 
 
-def _result_summary(
-    result: SpectralCalibrationResult,  # Fitted calibration result to summarize
-) -> dict[str, int | float]:
-    """Compute compact artifact-level summary metrics."""
-
-    return {
-        "train_experiments": int(result.train_indices.size),
-        "test_experiments": int(result.test_indices.size),
-        "objective_start": float(result.objective_history[0]),
-        "objective_end": float(result.objective_history[-1]),
-        "global_low_information_fraction": float(
-            np.mean(result.frequency_low_information_mask)
-        ),
-        "sensor_low_information_fraction": float(np.mean(result.low_information_mask)),
-        "gain_cap_fraction": float(np.mean(result.gain_at_correction_bound_mask)),
-        "noise_zero_fraction": float(np.mean(result.noise_zero_mask)),
-        "solver_nonfinite_step_count": int(np.sum(result.solver_nonfinite_step_count)),
-    }
-
-
 def _build_sensor_summary_rows(
-    result: SpectralCalibrationResult,  # Fitted calibration result to summarize
-) -> list[dict[str, float | str]]:
-    """Build the rows written to the human-readable sensor summary CSV."""
+    result: TwoLevelCalibrationResult,
+) -> list[dict[str, float | int | str]]:
+    """Build the human-readable per-sensor training summary rows."""
 
-    correction_gain_db = power_linear_to_db(result.correction_gain_power)
-    gain_power_db = power_linear_to_db(result.gain_power)
-    additive_noise_db = power_linear_to_db(result.additive_noise_power)
-    residual_std_db = power_linear_to_db(np.sqrt(result.residual_variance_power2))
-
-    rows: list[dict[str, float | str]] = []
+    rows: list[dict[str, float | int | str]] = []
     for sensor_index, sensor_id in enumerate(result.sensor_ids):
-        # Summarize only intent-relevant aggregates here so the CSV remains
-        # quick to scan while the full curves stay in the NPZ archive.
+        training_gain_samples_db: list[np.ndarray] = []
+        training_noise_samples_db: list[np.ndarray] = []
+        training_residual_std_samples_db: list[np.ndarray] = []
+        campaigns_seen = 0
+
+        for campaign_state in result.campaign_states:
+            if sensor_id not in campaign_state.sensor_ids:
+                continue
+            campaigns_seen += 1
+            local_sensor_index = campaign_state.sensor_ids.index(sensor_id)
+            training_gain_samples_db.append(
+                power_linear_to_db(campaign_state.gain_power[local_sensor_index])
+            )
+            training_noise_samples_db.append(
+                power_linear_to_db(campaign_state.additive_noise_power[local_sensor_index])
+            )
+            training_residual_std_samples_db.append(
+                power_linear_to_db(
+                    np.sqrt(campaign_state.residual_variance_power2[local_sensor_index])
+                )
+            )
+
         rows.append(
             {
                 "sensor_id": sensor_id,
-                "median_total_gain_db": float(np.median(gain_power_db[sensor_index])),
-                "median_correction_gain_db": float(
-                    np.median(correction_gain_db[sensor_index])
+                "reference_weight": float(result.sensor_reference_weight[sensor_index]),
+                "embedding_norm": float(
+                    np.linalg.norm(result.sensor_embeddings[sensor_index])
                 ),
-                "max_abs_correction_gain_db": float(
-                    np.max(np.abs(correction_gain_db[sensor_index]))
+                "campaigns_seen": campaigns_seen,
+                "median_training_gain_db": _nanmedian_from_samples(
+                    training_gain_samples_db
                 ),
-                "median_additive_noise_db": float(
-                    np.median(additive_noise_db[sensor_index])
+                "median_training_additive_noise_db": _nanmedian_from_samples(
+                    training_noise_samples_db
                 ),
-                "median_residual_std_db": float(
-                    np.median(residual_std_db[sensor_index])
-                ),
-                "low_information_fraction": float(
-                    np.mean(result.low_information_mask[sensor_index])
-                ),
-                "gain_cap_fraction": float(
-                    np.mean(result.gain_at_correction_bound_mask[sensor_index])
-                ),
-                "noise_zero_fraction": float(
-                    np.mean(result.noise_zero_mask[sensor_index])
-                ),
-                "solver_nonfinite_step_count": int(
-                    result.solver_nonfinite_step_count[sensor_index]
+                "median_training_residual_std_db": _nanmedian_from_samples(
+                    training_residual_std_samples_db
                 ),
             }
         )
     return rows
+
+
+def _nanmedian_from_samples(samples: list[np.ndarray]) -> float:
+    """Return the median over a list of sample arrays, or NaN when empty."""
+
+    if not samples:
+        return float("nan")
+    return float(np.median(np.concatenate(samples)))
+
+
+__all__ = [
+    "LoadedCalibrationArtifact",
+    "MODEL_SCHEMA_VERSION",
+    "SavedCalibrationArtifact",
+    "load_two_level_calibration_artifact",
+    "save_two_level_calibration_artifact",
+    "write_sensor_calibration_summary_csv",
+]

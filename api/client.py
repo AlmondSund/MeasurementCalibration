@@ -24,8 +24,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pandas as pd
-import requests
+import pandas as pd  # type: ignore[import-untyped]
+import requests  # type: ignore[import-untyped]
 from urllib3.exceptions import InsecureRequestWarning
 
 

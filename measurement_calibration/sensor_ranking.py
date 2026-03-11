@@ -34,6 +34,7 @@ IndexArray = NDArray[np.int64]
 _STD_EPSILON = 1.0e-8
 DEFAULT_CAMPAIGNS_DATA_DIR = Path("data") / "campaigns"
 _DEFAULT_CAMPAIGN_SENSOR_FILE_PATTERN = "*.csv"
+_METADATA_FILENAME = "metadata.csv"
 _MIN_ALIGNMENT_TOLERANCE_MS = 250
 _MAX_ALIGNMENT_TOLERANCE_MS = 5_000
 _ALIGNMENT_TOLERANCE_PERIOD_FRACTION = 0.25
@@ -412,7 +413,8 @@ class FileSystemCampaignSensorDataRepository:
                 path for path in root_dir.iterdir() if path.is_dir()
             )
             if any(
-                path.is_file() for path in campaign_dir.glob(self.sensor_file_pattern)
+                path.is_file() and path.name.lower() != _METADATA_FILENAME
+                for path in campaign_dir.glob(self.sensor_file_pattern)
             )
         ]
         return tuple(labels)
@@ -1235,7 +1237,9 @@ def _load_sensor_series_directory(
     """Load every sensor CSV from one directory into parsed series objects."""
 
     sensor_files = sorted(
-        path for path in Path(dataset_dir).glob(sensor_file_pattern) if path.is_file()
+        path
+        for path in Path(dataset_dir).glob(sensor_file_pattern)
+        if path.is_file() and path.name.lower() != _METADATA_FILENAME
     )
     if not sensor_files:
         raise ValueError(

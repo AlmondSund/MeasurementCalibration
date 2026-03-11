@@ -1,227 +1,102 @@
-"""Tests for calibration artifact serialization and reporting."""
+"""Tests for two-level calibration artifact serialization."""
 
 from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import cast
 
 import numpy as np
 
 from measurement_calibration.artifacts import (
-    load_spectral_calibration_artifact,
-    save_spectral_calibration_artifact,
+    load_two_level_calibration_artifact,
+    save_two_level_calibration_artifact,
 )
-from measurement_calibration.spectral_calibration import (
-    CalibrationDataset,
-    fit_spectral_calibration,
-    resolve_spectral_fit_config,
-)
+from measurement_calibration.spectral_calibration import fit_two_level_calibration
+
+from tests._synthetic_two_level import build_synthetic_two_level_fixture
 
 
-def test_save_and_load_spectral_calibration_artifact_round_trip(
+def test_save_and_load_two_level_calibration_artifact_round_trip(
     tmp_path: Path,
 ) -> None:
-    """Saved artifacts should reload into the same fitted calibration result."""
+    """Saved artifacts should reload into the same fitted two-level result."""
 
-    dataset = _synthetic_dataset()
-    train_indices = np.arange(0, 4, dtype=np.int64)
-    test_indices = np.arange(4, dataset.observations_power.shape[1], dtype=np.int64)
-    fit_config = {
-        "n_iterations": 4,
-        "lambda_gain_smooth": 12.0,
-        "lambda_noise_smooth": 10.0,
-        "lambda_gain_reference": 3.0,
-        "lambda_noise_reference": 20.0,
-        "lambda_reliable_anchor": 1.0,
-        "reliable_weight_boost": 1.05,
-        "low_information_threshold_ratio": 0.10,
-        "low_information_weight": 0.05,
-    }
-    resolved_fit_config = resolve_spectral_fit_config(fit_config)
-
-    result = fit_spectral_calibration(
-        observations_power=dataset.observations_power,
-        frequency_hz=dataset.frequency_hz,
-        sensor_ids=dataset.sensor_ids,
-        nominal_gain_power=dataset.nominal_gain_power,
-        train_indices=train_indices,
-        test_indices=test_indices,
-        reliable_sensor_id="Node1",
-        n_iterations=int(cast(int, resolved_fit_config["n_iterations"])),
-        lambda_gain_smooth=float(
-            cast(float, resolved_fit_config["lambda_gain_smooth"])
-        ),
-        lambda_noise_smooth=float(
-            cast(float, resolved_fit_config["lambda_noise_smooth"])
-        ),
-        lambda_gain_reference=float(
-            cast(float, resolved_fit_config["lambda_gain_reference"])
-        ),
-        lambda_noise_reference=float(
-            cast(float, resolved_fit_config["lambda_noise_reference"])
-        ),
-        lambda_reliable_anchor=float(
-            cast(float, resolved_fit_config["lambda_reliable_anchor"])
-        ),
-        reliable_weight_boost=float(
-            cast(float, resolved_fit_config["reliable_weight_boost"])
-        ),
-        max_correction_db=cast(float | None, resolved_fit_config["max_correction_db"]),
-        low_information_threshold_ratio=float(
-            cast(float, resolved_fit_config["low_information_threshold_ratio"])
-        ),
-        low_information_weight=float(
-            cast(float, resolved_fit_config["low_information_weight"])
-        ),
-        min_variance=float(cast(float, resolved_fit_config["min_variance"])),
+    fixture = build_synthetic_two_level_fixture()
+    result = fit_two_level_calibration(
+        corpus=fixture.corpus,
+        basis_config=fixture.basis_config,
+        model_config=fixture.model_config,
+        fit_config=fixture.fit_config,
     )
 
-    artifact = save_spectral_calibration_artifact(
+    artifact = save_two_level_calibration_artifact(
         output_dir=tmp_path / "artifact",
         result=result,
-        dataset=dataset,
-        acquisition_dir=tmp_path / "acquisitions",
-        response_dir=tmp_path / "responses",
-        reference_sensor_id="Node1",
-        reliable_sensor_id="Node1",
-        excluded_sensor_ids=(),
-        fit_config=resolved_fit_config,
-        extra_summary={"fit_duration_s": 0.25, "test_fraction": 1.0 / 3.0},
+        extra_summary={"fit_duration_s": 1.25},
     )
-    loaded = load_spectral_calibration_artifact(artifact.output_dir)
+    loaded = load_two_level_calibration_artifact(artifact.output_dir)
 
-    assert loaded.manifest["schema_version"] == 1
-    assert loaded.manifest["dataset"]["sensor_ids"] == list(dataset.sensor_ids)
-    assert loaded.manifest["result_summary"]["train_experiments"] == 4
-    assert loaded.manifest["result_summary"]["test_experiments"] == 2
-    assert loaded.manifest["result_summary"]["solver_nonfinite_step_count"] == 0
-    assert loaded.manifest["extra_summary"]["fit_duration_s"] == 0.25
-    assert loaded.manifest["fit_config"]["max_correction_db"] == 12.0
-    assert loaded.manifest["fit_config"]["min_variance"] == 1.0e-14
-    assert loaded.manifest["fit_split"]["train_indices"] == [0, 1, 2, 3]
-    assert loaded.manifest["fit_split"]["test_indices"] == [4, 5]
+    assert loaded.manifest["schema_version"] == 2
+    assert loaded.manifest["artifact_type"] == "configuration_conditional_calibration_model"
+    assert loaded.manifest["sensor_ids"] == list(result.sensor_ids)
+    assert loaded.manifest["training_summary"]["n_campaigns"] == len(result.campaign_states)
+    assert loaded.manifest["extra_summary"]["fit_duration_s"] == 1.25
+    assert loaded.manifest["basis_config"]["n_gain_basis"] == fixture.basis_config.n_gain_basis
+    assert loaded.manifest["fit_config"]["n_outer_iterations"] == fixture.fit_config.n_outer_iterations
 
     assert loaded.result.sensor_ids == result.sensor_ids
-    assert np.allclose(loaded.result.frequency_hz, result.frequency_hz)
-    assert np.allclose(loaded.result.gain_power, result.gain_power)
+    assert np.allclose(loaded.result.sensor_reference_weight, result.sensor_reference_weight)
+    assert np.allclose(loaded.result.configuration_feature_mean, result.configuration_feature_mean)
+    assert np.allclose(loaded.result.configuration_feature_scale, result.configuration_feature_scale)
+    assert np.allclose(loaded.result.sensor_embeddings, result.sensor_embeddings)
     assert np.allclose(
-        loaded.result.additive_noise_power,
-        result.additive_noise_power,
-    )
-    assert np.allclose(
-        loaded.result.residual_variance_power2,
-        result.residual_variance_power2,
+        loaded.result.configuration_encoder_weight,
+        result.configuration_encoder_weight,
     )
     assert np.allclose(
-        loaded.result.latent_spectra_power,
-        result.latent_spectra_power,
+        loaded.result.configuration_encoder_bias,
+        result.configuration_encoder_bias,
     )
-    assert np.allclose(loaded.result.nominal_gain_power, result.nominal_gain_power)
-    assert np.allclose(
-        loaded.result.correction_gain_power,
-        result.correction_gain_power,
-    )
-    assert np.array_equal(loaded.result.train_indices, result.train_indices)
-    assert np.array_equal(loaded.result.test_indices, result.test_indices)
-    assert np.allclose(
-        loaded.result.objective_history,
-        result.objective_history,
-    )
-    assert np.allclose(
-        loaded.result.latent_variation_power2,
-        result.latent_variation_power2,
-    )
-    assert np.allclose(
-        loaded.result.frequency_information_weight,
-        result.frequency_information_weight,
-    )
-    assert np.allclose(loaded.result.information_weight, result.information_weight)
-    assert np.array_equal(
-        loaded.result.frequency_low_information_mask,
-        result.frequency_low_information_mask,
-    )
-    assert np.array_equal(
-        loaded.result.low_information_mask,
-        result.low_information_mask,
-    )
-    assert np.array_equal(
-        loaded.result.gain_at_correction_bound_mask,
-        result.gain_at_correction_bound_mask,
-    )
-    assert np.array_equal(loaded.result.noise_zero_mask, result.noise_zero_mask)
-    assert np.array_equal(
-        loaded.result.solver_nonfinite_step_count,
-        result.solver_nonfinite_step_count,
-    )
+    assert np.allclose(loaded.result.gain_head_weight, result.gain_head_weight)
+    assert np.allclose(loaded.result.gain_head_bias, result.gain_head_bias)
+    assert np.allclose(loaded.result.floor_head_weight, result.floor_head_weight)
+    assert np.allclose(loaded.result.floor_head_bias, result.floor_head_bias)
+    assert np.allclose(loaded.result.variance_head_weight, result.variance_head_weight)
+    assert np.allclose(loaded.result.variance_head_bias, result.variance_head_bias)
+    assert np.allclose(loaded.result.objective_history, result.objective_history)
+    assert len(loaded.result.campaign_states) == len(result.campaign_states)
+
+    for loaded_state, original_state in zip(
+        loaded.result.campaign_states,
+        result.campaign_states,
+        strict=True,
+    ):
+        assert loaded_state.campaign_label == original_state.campaign_label
+        assert loaded_state.sensor_ids == original_state.sensor_ids
+        assert np.allclose(loaded_state.frequency_hz, original_state.frequency_hz)
+        assert np.allclose(
+            loaded_state.latent_spectra_power,
+            original_state.latent_spectra_power,
+        )
+        assert np.allclose(
+            loaded_state.deviation_log_gain,
+            original_state.deviation_log_gain,
+        )
+        assert np.allclose(loaded_state.gain_power, original_state.gain_power)
+        assert np.allclose(
+            loaded_state.additive_noise_power,
+            original_state.additive_noise_power,
+        )
+        assert np.allclose(
+            loaded_state.residual_variance_power2,
+            original_state.residual_variance_power2,
+        )
 
     with loaded.sensor_summary_path.open(newline="", encoding="utf-8") as csv_file:
         rows = list(csv.DictReader(csv_file))
 
-    assert len(rows) == len(dataset.sensor_ids)
+    assert len(rows) == len(result.sensor_ids)
     assert rows[0]["sensor_id"] == "Node1"
-    assert "median_total_gain_db" in rows[0]
-    assert "low_information_fraction" in rows[0]
-    assert "solver_nonfinite_step_count" in rows[0]
-
-
-def _synthetic_dataset() -> CalibrationDataset:
-    """Build a deterministic synthetic dataset for artifact serialization tests."""
-
-    rng = np.random.default_rng(7)
-    sensor_ids = ("Node1", "Node2", "Node3")
-    n_sensors = len(sensor_ids)
-    n_experiments = 6
-    n_frequencies = 12
-
-    frequency_hz = np.linspace(88.0e6, 108.0e6, n_frequencies)
-    frequency_phase = np.linspace(0.0, 1.0, n_frequencies)
-    nominal_gain_power = np.ones((n_sensors, n_frequencies), dtype=np.float64)
-
-    true_log_gain = np.vstack(
-        [
-            np.zeros(n_frequencies),
-            0.08 * np.sin(2.0 * np.pi * frequency_phase),
-            -0.05 * np.cos(2.0 * np.pi * frequency_phase),
-        ]
-    )
-    true_log_gain -= np.mean(true_log_gain, axis=0, keepdims=True)
-    true_gain = nominal_gain_power * np.exp(true_log_gain)
-
-    additive_noise_power = np.asarray(
-        [
-            np.linspace(0.010, 0.015, n_frequencies),
-            np.linspace(0.012, 0.017, n_frequencies),
-            np.linspace(0.011, 0.016, n_frequencies),
-        ],
-        dtype=np.float64,
-    )
-    latent_spectra_power = np.vstack(
-        [
-            0.8
-            + 0.10 * np.sin(2.0 * np.pi * frequency_phase * (1.0 + experiment / 4.0))
-            + 0.03 * experiment
-            for experiment in range(n_experiments)
-        ]
-    )
-    observations_power = (
-        true_gain[:, np.newaxis, :] * latent_spectra_power[np.newaxis, :, :]
-        + additive_noise_power[:, np.newaxis, :]
-        + 0.004 * rng.normal(size=(n_sensors, n_experiments, n_frequencies))
-    )
-    observations_power = np.clip(observations_power, 1.0e-6, None)
-
-    return CalibrationDataset(
-        sensor_ids=sensor_ids,
-        frequency_hz=frequency_hz,
-        observations_power=observations_power,
-        nominal_gain_power=nominal_gain_power,
-        experiment_timestamps_ms=np.arange(n_experiments, dtype=np.int64) * 1_000,
-        selected_band_hz=(88.0e6, 108.0e6),
-        sensor_shifts={sensor_id: 0 for sensor_id in sensor_ids},
-        alignment_median_error_ms={sensor_id: 0.0 for sensor_id in sensor_ids},
-        source_row_indices={
-            sensor_id: np.arange(n_experiments, dtype=np.int64)
-            for sensor_id in sensor_ids
-        },
-    )
+    assert "reference_weight" in rows[0]
+    assert "embedding_norm" in rows[0]
+    assert "campaigns_seen" in rows[0]

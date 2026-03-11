@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-import requests
+import requests  # type: ignore[import-untyped]
 
 from api.client import (
     SENSOR_NETWORK_MAC_BY_LABEL,
