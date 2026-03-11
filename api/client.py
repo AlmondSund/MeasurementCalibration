@@ -33,9 +33,6 @@ API_BASE_URL = "https://rsm.ane.gov.co:12443/api"
 CAMPAIGNS_DATA_DIR = Path("data") / "campaigns"
 
 # Keep a single source of truth for the deployed Node1..Node10 network.
-# If a future node MAC is not yet known, use PLACEHOLDER_MAC_ADDRESS until the
-# real hardware identifier is available.
-PLACEHOLDER_MAC_ADDRESS = "unknown"
 SENSOR_NETWORK_MAC_BY_LABEL: dict[str, str] = {
     "Node1": "d8:3a:dd:f7:1d:f2",
     "Node2": "d8:3a:dd:f4:4e:26",
@@ -121,9 +118,9 @@ class CampaignDownloadResult:
         caller-provided labels or overrides.
     saved_csv_paths:
         CSV path written for each sensor that produced retained measurements.
-    skipped_sensors:
-        Sensors that were skipped, together with the reason. Typical causes are
-        placeholder MACs, API 404 responses, or empty datasets after filtering.
+        skipped_sensors:
+            Sensors that were skipped, together with the reason. Typical causes are
+            API 404 responses or empty datasets after filtering.
     """
 
     campaign_label: str
@@ -326,13 +323,6 @@ class MeasurementApiClient:
         skipped_sensors: dict[str, str] = {}
 
         for sensor_label, mac_address in resolved_sensor_mac_by_label.items():
-            if _is_placeholder_mac_address(mac_address):
-                message = "Placeholder MAC address; sensor skipped"
-                if skip_missing_sensors:
-                    skipped_sensors[sensor_label] = message
-                    continue
-                raise ValueError(f"{sensor_label} uses a placeholder MAC address")
-
             try:
                 measurements = self.fetch_sensor_measurements(
                     mac_address=mac_address,
@@ -635,14 +625,6 @@ def _sanitize_path_component(
     return sanitized
 
 
-def _is_placeholder_mac_address(
-    mac_address: str,  # Candidate MAC address from the sensor network mapping
-) -> bool:  # Whether the address is a placeholder and not routable
-    """Return whether the supplied MAC address is a placeholder value."""
-
-    return mac_address.strip().lower() == PLACEHOLDER_MAC_ADDRESS
-
-
 __all__ = [
     "API_BASE_URL",
     "CAMPAIGNS_DATA_DIR",
@@ -653,7 +635,6 @@ __all__ = [
     "MeasurementApiError",
     "MeasurementApiRequestError",
     "NUMERIC_COLUMNS",
-    "PLACEHOLDER_MAC_ADDRESS",
     "SENSOR_NETWORK_MAC_BY_LABEL",
     "build_campaign_output_dir",
     "load_measurement_dataframe",

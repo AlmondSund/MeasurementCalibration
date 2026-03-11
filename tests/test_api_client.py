@@ -12,7 +12,6 @@ import pytest
 import requests
 
 from api.client import (
-    PLACEHOLDER_MAC_ADDRESS,
     SENSOR_NETWORK_MAC_BY_LABEL,
     MeasurementApiClient,
     MeasurementApiConfig,
@@ -200,29 +199,6 @@ def test_download_campaign_csvs_writes_campaign_data_and_skips_404_sensors(
     assert frame["mac"].iloc[0] == node1_mac
     assert frame["timestamp"].iloc[0] == 1_771_929_017_886
     assert np.allclose(frame["pxx"].iloc[0], np.asarray([-21.09, -21.24, -21.19]))
-
-
-def test_download_campaign_csvs_skips_placeholder_sensor_without_request(
-    tmp_path: Path,
-) -> None:
-    """Placeholder MACs should be reported without issuing any HTTP request."""
-
-    session = _FakeSession(responses_by_url={})
-    client = MeasurementApiClient(session=session)
-
-    result = client.download_campaign_csvs(
-        campaign_label="placeholder-campaign",
-        campaign_id=205,
-        sensor_mac_by_label={"Node4": PLACEHOLDER_MAC_ADDRESS},
-        output_root=tmp_path / "campaigns",
-        skip_missing_sensors=True,
-    )
-
-    assert result.saved_csv_paths == {}
-    assert result.skipped_sensors["Node4"] == "Placeholder MAC address; sensor skipped"
-    assert session.calls == []
-
-
 def test_fetch_sensor_measurements_rejects_non_mapping_rows() -> None:
     """Malformed payload rows should fail fast at the HTTP boundary."""
 
