@@ -13,7 +13,7 @@
 
 \section{Implemented spectral calibration model}
 
-\subsection{Indices, data, and preprocessing}
+\subsection{Indices, data, and campaign preprocessing}
 
 Let $s\in\{1,\dots,M\}$ index sensors, let $k\in\{1,\dots,K\}$ index aligned calibration experiments, and let $j\in\{1,\dots,J\}$ index the discrete frequency bins of the common calibration band. After preprocessing, the calibration data are represented by an observation tensor
 \[
@@ -23,30 +23,42 @@ Y_{s,k,j}>0,
 \]
 in linear power units.
 
-The implemented preprocessing stage does the following.
+Before alignment, sensor $s$ provides a timestamped series
+\[
+\{(\tau_{s,r},x_{s,r,1},\dots,x_{s,r,J})\}_{r=1}^{R_s},
+\]
+where $\tau_{s,r}$ is the record timestamp and the $x_{s,r,j}$ are PSD values
+in dB.
+
+The implemented campaign preprocessing stage does the following.
 
 \begin{enumerate}
-    \item It parses one acquisition CSV per sensor and extracts the PSD vectors.
-    \item It selects the frequency band shared by all sensors.
-    \item It aligns the experiment sequences by searching a small integer shift for each sensor relative to a designated reference sensor.
-    \item It constructs a uniform frequency grid from the selected common band.
-    \item It interpolates each sensor's nominal response CSV onto that grid.
-    \item It normalizes the nominal gains so that their geometric mean is one at each frequency.
+    \item It loads one campaign directory from the \texttt{data/campaigns/} root and parses one CSV per sensor.
+    \item It sorts each sensor series by timestamp and validates that every retained sensor already uses the same PSD frequency grid.
+    \item It chooses the shortest sensor series as the alignment anchor, so every retained realization is observable across the full sensor set.
+    \item It aligns records greedily by timestamp: for each anchor timestamp, every other sensor contributes the nearest later record within an alignment tolerance, while preserving time order and dropping unmatched rows.
+    \item It converts the aligned PSD tensor from dB to linear power, producing $Y_{s,k,j}$.
+    \item It computes ranking diagnostics on the aligned dB tensor and chooses a reliable sensor $s_\star$ as the highest record-wise correlation winner that is \emph{not} flagged as a campaign-wide PSD-distribution outlier; if every retained sensor is an outlier, it falls back to the record-wise winner.
+    \item It sets the nominal gain baseline to unity for every sensor and frequency bin.
 \end{enumerate}
 
-Denote the resulting nominal gain by $G^{(0)}_{s,j}>0$. The normalization is
+The alignment tolerance is either supplied explicitly by the caller or inferred
+from the median campaign sampling period and then clipped to a conservative
+range. The aligned experiment timestamp stored by the adapter is the median
+timestamp across sensors for each retained realization.
+
+Denote the resulting nominal gain baseline by $G^{(0)}_{s,j}>0$. In the active
+campaign workflow the baseline is
 \begin{equation}
-\bar G^{(0)}_j
-=
-\exp\!\left(
-\frac{1}{M}\sum_{s=1}^{M}\log G^{(0)}_{s,j}
-\right),
+G^{(0)}_{s,j}=1,
 \qquad
-G^{(0)}_{s,j}\leftarrow \frac{G^{(0)}_{s,j}}{\bar G^{(0)}_j}.
-\label{eq:nominal-normalization}
+s=1,\dots,M,\ j=1,\dots,J.
+\label{eq:nominal-baseline}
 \end{equation}
 
-Because the loader constructs equally spaced frequency centers on the retained band, the second-difference smoothers used later act on a uniform grid.
+So the learned calibration is a \emph{relative} network calibration around a
+unit reference scale. Unlike older versions of the project, the current
+repository does not ingest external per-sensor nominal response CSV files.
 
 \subsection{Observation model}
 
@@ -133,20 +145,33 @@ Equivalently,
 0,
 \label{eq:ident-full}
 \end{equation}
-because the nominal gains have already been normalized by \eqref{eq:nominal-normalization}.
+because the active campaign workflow uses the unity baseline
+\eqref{eq:nominal-baseline}. More generally, the core solver would only require
+the baseline gains to have zero-mean log scale across sensors.
 
 Under \eqref{eq:ident}, the latent spectra $\{S_{k,j}\}$ live on the common network reference scale.
 
 \subsection{Reliable-sensor prior}
 
-Let $s_\star$ denote the sensor believed to be the most reliable one. The implementation does \emph{not} impose a hard reference constraint. Instead it uses two soft mechanisms:
+Let $s_\star$ denote the sensor believed to be the most reliable one. In the
+current campaign workflow, this sensor is not chosen manually. Instead the code
+first ranks sensors by record-wise cumulative cross-correlation, then filters
+those candidates against a campaign-wide PSD-distribution similarity diagnostic.
+The reliable sensor is the first record-wise winner that is not flagged as a
+distribution-shape outlier; if all retained sensors are flagged, the code uses
+the record-wise winner anyway.
+
+Once $s_\star$ has been selected, the implementation does \emph{not} impose a
+hard reference constraint. Instead it uses two soft mechanisms:
 
 \begin{enumerate}
     \item A quadratic anchor on the residual log-gain of the reliable sensor, favoring
     \[
     \gamma_{s_\star,j}\approx 0,
     \]
-    meaning that the reliable sensor should stay close to its nominal curve.
+    meaning that the reliable sensor should stay close to the unit network
+    reference gain, or more generally to the nominal baseline supplied to the
+    core solver.
     \item An optional multiplicative boost of its inverse-variance weight in the latent-spectrum update.
 \end{enumerate}
 
@@ -203,18 +228,48 @@ Y_{s,k,j}-G^{(0,\mathrm{fit})}_{s,j}S^{(0)}_{k,j}-N^{(0)}_{s,j}
 
 \subsection{Second-difference smoothers}
 
-Let $D_2\in\mathbb R^{(J-2)\times J}$ denote the second-difference operator
+Let $f_1<\dots<f_J$ denote the actual frequency grid used by the aligned
+campaign tensor. The implementation does \emph{not} assume exact unit spacing.
+Instead it normalizes the grid by the median spacing
 \[
-(D_2 x)_r = x_r - 2x_{r+1} + x_{r+2},
-\qquad r=1,\dots,J-2.
+\tilde h = \operatorname{median}(f_{j+1}-f_j),
+\qquad j=1,\dots,J-1,
 \]
-The implementation uses the corresponding Gram matrix
+and defines normalized coordinates
+\[
+x_1=0,
+\qquad
+x_j=\sum_{u=1}^{j-1}\frac{f_{u+1}-f_u}{\tilde h},
+\qquad j=2,\dots,J.
+\]
+
+For row $r\in\{1,\dots,J-2\}$, let
+\[
+h^-_r = x_{r+1}-x_r,
+\qquad
+h^+_r = x_{r+2}-x_{r+1}.
+\]
+The implemented curvature operator uses the three-point non-uniform second
+difference
+\[
+(D_2 x)_r
+=
+\frac{2}{h^-_r(h^-_r+h^+_r)}x_r
+-
+\frac{2}{h^-_r h^+_r}x_{r+1}
++
+\frac{2}{h^+_r(h^-_r+h^+_r)}x_{r+2}.
+\]
+The smoother then uses the corresponding Gram matrix
 \begin{equation}
 L = D_2^\top D_2.
 \label{eq:L}
 \end{equation}
 
 Crucially, the gain smoother acts on $\gamma_s=(\gamma_{s,1},\dots,\gamma_{s,J})^\top$, i.e. on \emph{log-gain correction}, and the noise smoother acts on $\eta_s=(\eta_{s,1},\dots,\eta_{s,J})^\top$, i.e. on the \emph{softplus preimage}, not directly on $N_s$.
+
+On an exactly uniform grid this reduces, up to the common scaling induced by
+the normalized coordinates, to the usual second-difference smoother.
 
 \subsection{Alternating estimation actually implemented}
 
@@ -781,6 +836,13 @@ Validation is performed by splitting whole calibration experiments into training
 \]
 estimating the calibration on $\mathcal K_{\mathrm{train}}$, and checking whether the deployed correction \eqref{eq:deploy} reduces inter-sensor dispersion on $\mathcal K_{\mathrm{test}}$.
 
+In the current campaign adapter, hold-out reporting also includes per-sensor
+bias and RMSE to a leave-one-sensor-out corrected consensus, the fraction of
+bins where $Y_{s,k,j}\le N_{s,j}$ would make the deployed correction invalid
+before nonnegativity truncation, the median information weight, the fraction of
+low-information bins, the fraction of bins that hit the gain cap, and the
+median alignment timing error.
+
 The fitted result stores, in addition to $(G,N,\sigma^2,S)$, the following diagnostics:
 \begin{itemize}
     \item the residual correction gain $\exp(\gamma_{s,j})$;
@@ -796,8 +858,8 @@ The fitted result stores, in addition to $(G,N,\sigma^2,S)$, the following diagn
 The implemented estimator is therefore an alternating latent-variable scheme with the following specific structure:
 
 \begin{enumerate}
-    \item preprocess and align the common-field dataset;
-    \item normalize nominal gains to the network reference scale;
+    \item load one campaign dataset, align rows by timestamp, and select a reliable sensor from ranking diagnostics;
+    \item set the nominal gain baseline to one;
     \item represent gain by a residual log correction and noise by a softplus parameter;
     \item update the latent spectra by weighted least squares;
     \item detect weakly identifiable frequencies from latent variation and refine this into sensor-specific information weights;
