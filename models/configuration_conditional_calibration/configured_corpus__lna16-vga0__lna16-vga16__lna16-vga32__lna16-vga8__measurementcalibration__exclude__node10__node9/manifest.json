@@ -1,0 +1,203 @@
+{
+  "artifact_type": "configuration_conditional_calibration_model",
+  "basis_config": {
+    "n_floor_basis": 8,
+    "n_gain_basis": 10,
+    "n_variance_basis": 8,
+    "spline_degree": 3
+  },
+  "campaigns": [
+    {
+      "campaign_label": "LNA16_VGA0",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 16.0,
+        "resolution_bandwidth_hz": 3000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 0.0
+      },
+      "n_acquisitions": 30,
+      "n_frequencies": 16384,
+      "objective_value": 468979.8003116285,
+      "reliable_sensor_id": "Node2",
+      "sensor_ids": [
+        "Node1",
+        "Node2",
+        "Node3",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_label": "LNA16_VGA16",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 16.0,
+        "resolution_bandwidth_hz": 3000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 16.0
+      },
+      "n_acquisitions": 30,
+      "n_frequencies": 16384,
+      "objective_value": 4739961.26876866,
+      "reliable_sensor_id": "Node1",
+      "sensor_ids": [
+        "Node1",
+        "Node2",
+        "Node3",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_label": "LNA16_VGA32",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 16.0,
+        "resolution_bandwidth_hz": 3000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 32.0
+      },
+      "n_acquisitions": 30,
+      "n_frequencies": 16384,
+      "objective_value": 673785094.5006404,
+      "reliable_sensor_id": "Node1",
+      "sensor_ids": [
+        "Node1",
+        "Node2",
+        "Node3",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_label": "LNA16_VGA8",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 16.0,
+        "resolution_bandwidth_hz": 3000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 8.0
+      },
+      "n_acquisitions": 30,
+      "n_frequencies": 16384,
+      "objective_value": 2650838.3745600553,
+      "reliable_sensor_id": "Node2",
+      "sensor_ids": [
+        "Node1",
+        "Node2",
+        "Node3",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_label": "MeasurementCalibration",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 0.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 62.0
+      },
+      "n_acquisitions": 179,
+      "n_frequencies": 4096,
+      "objective_value": 430929988.71958786,
+      "reliable_sensor_id": "Node2",
+      "sensor_ids": [
+        "Node1",
+        "Node2",
+        "Node3",
+        "Node5"
+      ]
+    }
+  ],
+  "created_at_utc": "2026-03-11T21:37:13.148123+00:00",
+  "extra_summary": {
+    "fit_duration_s": 670.2683235310001,
+    "n_campaigns": 5
+  },
+  "fit_config": {
+    "adam_beta1": 0.9,
+    "adam_beta2": 0.999,
+    "adam_epsilon": 1e-08,
+    "adaptive_variance_floor_ratio": 0.0001,
+    "divergence_tolerance_ratio": 10.0,
+    "early_stopping_patience": 5,
+    "early_stopping_relative_tolerance": 0.0001,
+    "gradient_clip_norm": 10.0,
+    "lambda_delta_floor_shrink": 0.2,
+    "lambda_delta_floor_smooth": 1.0,
+    "lambda_delta_gain_shrink": 0.2,
+    "lambda_delta_gain_smooth": 1.0,
+    "lambda_delta_variance_shrink": 0.2,
+    "lambda_delta_variance_smooth": 1.0,
+    "lambda_reliable_sensor_anchor": 0.1,
+    "learning_rate": 0.03,
+    "n_gradient_steps": 20,
+    "n_outer_iterations": 8,
+    "random_seed": 0,
+    "refresh_campaign_variance_from_residuals": true,
+    "select_best_outer_iterate": true,
+    "sigma_min": 1e-08,
+    "variance_refresh_ridge": 1e-06,
+    "weight_decay": 0.0001
+  },
+  "fit_diagnostics": {
+    "final_objective_value": 1112574862.9538562,
+    "n_completed_outer_iterations": 8,
+    "selected_from_best_iterate": false,
+    "selected_objective_value": 1112574862.9538562,
+    "selected_outer_iteration": 7,
+    "terminated_early": false,
+    "termination_reason": "completed_all_iterations"
+  },
+  "model_config": {
+    "configuration_latent_dim": 4,
+    "sensor_embedding_dim": 4
+  },
+  "parameters_file": "calibration_parameters.npz",
+  "provenance": {
+    "corpus_fingerprint": "217b183e4ad13ea1d4302ac017cd44002386673a9687d7e404e020371c63f55d",
+    "git_branch": "main",
+    "git_commit": "1739263cc0891caa32942f0290f356ead68f573f",
+    "git_dirty": true,
+    "numpy_version": "2.0.2",
+    "parameters_sha256": "d54e24e429ef533cda7680533dc7e0665ee2254db80f40665b7a150d0b0237db",
+    "platform": "Linux-6.6.113+-x86_64-with-glibc2.35",
+    "python_version": "3.12.12",
+    "scipy_version": "1.16.3",
+    "sensor_summary_sha256": "355f05c77f20b50752cf679754bae2db1a2130c4af0eebe096e3b47c8e0fc2be"
+  },
+  "schema_version": 2,
+  "sensor_ids": [
+    "Node1",
+    "Node2",
+    "Node3",
+    "Node5"
+  ],
+  "sensor_reference_weight": {
+    "Node1": 0.25,
+    "Node2": 0.25,
+    "Node3": 0.25,
+    "Node5": 0.25
+  },
+  "sensor_summary_file": "sensor_summary.csv",
+  "training_summary": {
+    "effective_variance_floor_power2": 5.788983003477971e-07,
+    "mean_campaign_objective": 222514972.53277367,
+    "n_campaigns": 5,
+    "n_sensors": 4,
+    "objective_end": 1112574862.9538562,
+    "objective_selected": 1112574862.9538562,
+    "objective_start": 1950440737.998943,
+    "selected_outer_iteration": 7,
+    "terminated_early": 0
+  }
+}
