@@ -1,47 +1,87 @@
-% Requires: \usepackage{amsmath,amssymb}
+% Requires:
+% \usepackage{amsmath,amssymb,amsthm,bm}
 
-\section{Hybrid amortized configuration-conditional spectral calibration model}
+\section{Two-level configuration-conditional spectral calibration model}
 
-\subsection{Campaign-level data, metadata, and notation}
+\subsection{Purpose and scope}
 
-Let the training corpus be a collection of campaigns
+The goal is to learn a calibration system that is trained offline from
+\emph{colocated calibration campaigns}, in which all participating sensors
+observe the same latent spectrum, and is then deployed online to calibrate
+\emph{individual sensors} operating at arbitrary locations, where different
+sensors generally observe different spectra.
+
+The model therefore has two levels:
+
+\begin{enumerate}
+    \item an \emph{offline identification level}, which uses same-scene
+    multi-sensor campaigns to learn persistent sensor- and
+    configuration-dependent calibration laws;
+    \item an \emph{online deployment level}, which applies the learned
+    persistent laws to calibrate a single sensor in an arbitrary scene,
+    without requiring any common-field assumption at deployment time.
+\end{enumerate}
+
+The key structural principle is that only the offline level uses the
+``all sensors see the same spectrum'' assumption. The online level does not.
+
+\subsection{Offline calibration corpus}
+
+Let
 \[
-\mathcal D=\{ \mathcal C_m \}_{m=1}^{M_{\mathrm{camp}}},
+\mathcal D_{\mathrm{cal}}
+=
+\{\mathcal C_m\}_{m=1}^{M_{\mathrm{cal}}}
 \]
-where campaign $m$ is represented by
+be the corpus of offline calibration campaigns.
+Campaign $m$ is represented by
 \[
-\mathcal C_m = \bigl(\mathcal S_m,\;K_m,\;f_m,\;c_m,\;Y_m\bigr).
+\mathcal C_m
+=
+\bigl(
+\mathcal S_m,\,
+K_m,\,
+f_m,\,
+c_m,\,
+Y_m
+\bigr),
 \]
+where:
 
-Here:
 \begin{itemize}
-    \item $\mathcal S_m \subseteq \{1,\dots,S_{\max}\}$ is the set of sensors participating in campaign $m$, with cardinality
-    \[
-    M_m = |\mathcal S_m| \ge 2;
-    \]
-    \item $K_m \in \mathbb N$ is the number of aligned acquisitions in campaign $m$;
+    \item $\mathcal S_m \subseteq \{1,\dots,S_{\max}\}$ is the set of
+    sensors participating in campaign $m$;
+    \item $M_m := |\mathcal S_m| \ge 2$ is the number of participating sensors;
+    \item $K_m \in \mathbb N$ is the number of aligned acquisitions;
     \item
     \[
-    f_m = (f_{m,1},\dots,f_{m,J_m}),
+    f_m=(f_{m,1},\dots,f_{m,J_m}),
     \qquad
-    f_{m,1} < \cdots < f_{m,J_m},
+    f_{m,1}<\cdots<f_{m,J_m},
     \]
-    is the common frequency grid retained after campaign preprocessing;
+    is the retained common frequency grid for campaign $m$;
     \item
     \[
     c_m \in \mathcal X
     \]
-    is the acquisition configuration, assumed constant within campaign $m$:
+    is the campaign acquisition configuration, assumed constant within the
+    campaign;
+    \item
     \[
-    c_m =
+    c_m
+    =
     \bigl(
     f_{{\mathrm c},m},\,
     B_m,\,
     \mathrm{RBW}_m,\,
     g_{{\mathrm{LNA}},m},\,
     g_{{\mathrm{VGA}},m}
-    \bigr);
+    \bigr),
     \]
+    where $f_{{\mathrm c},m}$ is central frequency, $B_m$ is span/sample-rate
+    metadata, $\mathrm{RBW}_m$ is the resolution bandwidth,
+    $g_{{\mathrm{LNA}},m}$ is the LNA gain, and
+    $g_{{\mathrm{VGA}},m}$ is the VGA gain;
     \item
     \[
     Y_m=\{Y_{m,s,k,j}\}
@@ -54,13 +94,10 @@ Here:
     \]
 \end{itemize}
 
-Thus each campaign is internally fixed-config, but different campaigns may have different configurations $c_m$ and different frequency grids $f_m$.
+\subsection{Offline same-scene observation model}
 
-Ancillary metadata such as campaign label, date range, and acquisition cadence may be stored for bookkeeping, filtering, or optional side-information. However, the physically relevant observation operator is determined by $c_m$ and the retained frequency grid $f_m$.
-
-\subsection{Forward observation model}
-
-For campaign $m$, sensor $s\in\mathcal S_m$, acquisition $k$, and frequency bin $j$, we posit
+For campaign $m$, sensor $s\in\mathcal S_m$, acquisition $k$, and frequency
+bin $j$, the observed PSD is modeled as
 \begin{equation}
 Y_{m,s,k,j}
 =
@@ -69,157 +106,218 @@ G_{m,s,j}\,S_{m,k,j}
 N_{m,s,j}
 +
 \varepsilon_{m,s,k,j},
-\label{eq:hybrid-forward}
+\label{eq:offline-forward}
 \end{equation}
-where
+where:
+
 \begin{itemize}
-    \item $S_{m,k,j}\ge 0$ is the latent common spectrum for campaign $m$ at acquisition $k$ and bin $j$;
-    \item $G_{m,s,j}>0$ is the multiplicative calibration gain of sensor $s$ in campaign $m$ at frequency $f_{m,j}$;
-    \item $N_{m,s,j}\ge 0$ is the additive floor of sensor $s$ in campaign $m$ at frequency $f_{m,j}$;
-    \item $\varepsilon_{m,s,k,j}$ is the residual term.
+    \item $S_{m,k,j}\ge 0$ is the latent common spectrum of the colocated
+    calibration campaign at acquisition $k$ and frequency bin $j$;
+    \item $G_{m,s,j}>0$ is the multiplicative gain of sensor $s$ in campaign
+    $m$ at bin $j$;
+    \item $N_{m,s,j}\ge 0$ is the additive floor of sensor $s$ in campaign
+    $m$ at bin $j$;
+    \item $\varepsilon_{m,s,k,j}$ is a residual term.
 \end{itemize}
 
-Conditionally on $(G,N,S)$, the working likelihood is Gaussian:
+Conditionally on the latent spectrum and calibration parameters, the working
+likelihood is Gaussian:
 \begin{equation}
 \varepsilon_{m,s,k,j}
 \mid
-G_{m,s,j},N_{m,s,j},S_{m,k,j}
+S_{m,k,j},G_{m,s,j},N_{m,s,j}
 \sim
 \mathcal N\!\left(0,\sigma^2_{m,s,j}\right),
-\label{eq:hybrid-gaussian}
+\label{eq:offline-gaussian}
 \end{equation}
-with campaign-, sensor-, and frequency-dependent residual variance $\sigma^2_{m,s,j}>0$.
+with $\sigma^2_{m,s,j}>0$.
 
-The corresponding calibrated sensor-domain estimate is
-\begin{equation}
-X_{m,s,k,j}
-=
-\frac{\bigl[Y_{m,s,k,j}-N_{m,s,j}\bigr]_+}{G_{m,s,j}},
-\label{eq:hybrid-corrected}
-\end{equation}
-where $[x]_+ = \max\{x,0\}$ or, in implementation, clipping to a small positive floor $\varepsilon_S>0$ for numerical stability.
+\subsection{Persistent laws and campaign-specific deviations}
 
-\subsection{Hybrid amortized parameterization}
+The two-level model separates calibration into:
 
-The campaign-specific calibration parameters are not fitted independently from scratch. Instead they are generated by one global trainable model with parameters $\theta$.
+\begin{enumerate}
+    \item \emph{persistent sensor/configuration laws}, which are intended to
+    transfer to deployment;
+    \item \emph{campaign-specific deviations}, which account for residual
+    nuisance variation during offline training.
+\end{enumerate}
 
-\subsubsection{Sensor and campaign encoders}
-
-Each sensor identity $s\in\{1,\dots,S_{\max}\}$ is associated with a trainable embedding
-\[
-e_s \in \mathbb R^{d_s}.
-\]
-
-The acquisition configuration is encoded by a trainable map
-\[
-u_\theta : \mathcal X \to \mathbb R^{d_c},
-\qquad
-u_m := u_\theta(c_m).
-\]
-
-For each sensor $s\in\mathcal S_m$, define a sensor summary
-\[
-r_{m,s} \in \mathbb R^{d_r}.
-\]
-If sensor $s$ is visible to the encoder, then
-\begin{equation}
-r_{m,s}
-=
-\phi_\theta\!\left(
-Y_{m,s,\cdot,\cdot},
-f_m,
-c_m
-\right),
-\label{eq:sensor-summary-visible}
-\end{equation}
-where $\phi_\theta$ is a sensor-wise encoder operating on the full time-frequency tensor of that sensor within campaign $m$. If sensor $s$ is masked during training, then
-\begin{equation}
-r_{m,s}=r_{\varnothing},
-\label{eq:sensor-summary-masked}
-\end{equation}
-where $r_{\varnothing}\in\mathbb R^{d_r}$ is a learned mask token.
-
-The campaign context is produced by a permutation-invariant aggregation of the visible sensor summaries:
-\begin{equation}
-h_m
-=
-\rho_\theta\!\left(
-\{(e_s,r_{m,s}) : s\in\mathcal V_m\},
-u_m
-\right)
-\in \mathbb R^{d_h},
-\label{eq:campaign-context}
-\end{equation}
-where $\mathcal V_m\subseteq \mathcal S_m$ is the visible subset used by the encoder during training, and $\rho_\theta$ is permutation-invariant with respect to the sensor order.
-
-\subsubsection{Frequency-basis parameterization}
-
-To support campaigns with different frequency grids and to enforce smoothness with respect to physical frequency, the calibration curves are generated through basis expansions.
+\subsubsection{Persistent latent laws}
 
 Let
 \[
-b^\gamma_\ell:\mathbb R\to\mathbb R,
-\quad \ell=1,\dots,L_\gamma,
+G_s^{(0)}(f,c) > 0
+\]
+be a nominal multiplicative baseline. In the simplest current convention one
+may set
+\[
+G_s^{(0)}(f,c)\equiv 1.
+\]
+
+Define three persistent latent functions:
+\[
+\Gamma_s^\star(f,c)\in\mathbb R,
+\qquad
+H_s^\star(f,c)\in\mathbb R,
+\qquad
+V_s^\star(f,c)\in\mathbb R,
+\]
+where:
+
+\begin{itemize}
+    \item $\Gamma_s^\star(f,c)$ is the persistent log-gain law;
+    \item $H_s^\star(f,c)$ is the persistent additive-floor pre-activation;
+    \item $V_s^\star(f,c)$ is the persistent variance pre-activation.
+\end{itemize}
+
+The persistent deployment-scale laws are then
+\begin{align}
+G_s^\star(f,c)
+&=
+G_s^{(0)}(f,c)\exp\!\bigl(\Gamma_s^\star(f,c)\bigr),
+\label{eq:persistent-gain}
+\\
+N_s^\star(f,c)
+&=
+\phi\!\bigl(H_s^\star(f,c)\bigr),
+\label{eq:persistent-floor}
+\\
+\sigma_s^{2,\star}(f,c)
+&=
+\sigma_{\min}^2+\phi\!\bigl(V_s^\star(f,c)\bigr),
+\label{eq:persistent-var}
+\end{align}
+where
+\[
+\phi(x)=\log(1+e^x)
+\]
+is the softplus map and $\sigma_{\min}^2>0$ is a fixed minimum variance.
+
+\subsubsection{Neural parameterization of the persistent laws}
+
+Let $e_s\in\mathbb R^{d_s}$ be a trainable embedding for sensor identity
+$s$, and let
+\[
+u_\theta:\mathcal X\to\mathbb R^{d_c}
+\]
+be a trainable configuration encoder.
+
+Let
+\[
+b^\Gamma_\ell:\mathbb R\to\mathbb R,
+\quad \ell=1,\dots,L_\Gamma,
 \]
 \[
-b^\eta_\ell:\mathbb R\to\mathbb R,
-\quad \ell=1,\dots,L_\eta,
+b^H_\ell:\mathbb R\to\mathbb R,
+\quad \ell=1,\dots,L_H,
 \]
 \[
-b^\nu_\ell:\mathbb R\to\mathbb R,
-\quad \ell=1,\dots,L_\nu,
+b^V_\ell:\mathbb R\to\mathbb R,
+\quad \ell=1,\dots,L_V,
 \]
-be fixed frequency basis functions (for example, cubic B-splines defined over the relevant frequency range).
+be fixed smooth frequency basis functions (for example, cubic B-splines).
 
-For each campaign $m$ and sensor $s\in\mathcal S_m$, the model generates coefficient vectors
+The persistent laws are parameterized by a neural network with global weights
+$\theta$:
 \begin{align}
-a^\gamma_{m,s}
+a^\Gamma_\theta(s,c)
 &=
-A^\gamma_\theta(e_s,r_{m,s},h_m,u_m)
-\in\mathbb R^{L_\gamma},
-\label{eq:coef-gamma}
+A^\Gamma_\theta\!\bigl(e_s,u_\theta(c)\bigr)
+\in\mathbb R^{L_\Gamma},
+\label{eq:aGamma}
 \\
-a^\eta_{m,s}
+a^H_\theta(s,c)
 &=
-A^\eta_\theta(e_s,r_{m,s},h_m,u_m)
-\in\mathbb R^{L_\eta},
-\label{eq:coef-eta}
+A^H_\theta\!\bigl(e_s,u_\theta(c)\bigr)
+\in\mathbb R^{L_H},
+\label{eq:aH}
 \\
-a^\nu_{m,s}
+a^V_\theta(s,c)
 &=
-A^\nu_\theta(e_s,r_{m,s},h_m,u_m)
-\in\mathbb R^{L_\nu},
-\label{eq:coef-nu}
+A^V_\theta\!\bigl(e_s,u_\theta(c)\bigr)
+\in\mathbb R^{L_V},
+\label{eq:aV}
 \end{align}
-where $A^\gamma_\theta$, $A^\eta_\theta$, and $A^\nu_\theta$ are trainable hypernetworks.
-
-These coefficient vectors induce unconstrained campaign-specific curves
+and
 \begin{align}
-\bar\gamma_{m,s,j}
+\Gamma_s^\star(f,c)
 &=
-\sum_{\ell=1}^{L_\gamma}
-a^\gamma_{m,s,\ell}\,
-b^\gamma_\ell(f_{m,j}),
-\label{eq:raw-gamma}
+\sum_{\ell=1}^{L_\Gamma}
+a^\Gamma_{\theta,\ell}(s,c)\,b^\Gamma_\ell(f),
+\label{eq:Gamma-star-basis}
 \\
-\eta_{m,s,j}
+H_s^\star(f,c)
 &=
-\sum_{\ell=1}^{L_\eta}
-a^\eta_{m,s,\ell}\,
-b^\eta_\ell(f_{m,j}),
-\label{eq:raw-eta}
+\sum_{\ell=1}^{L_H}
+a^H_{\theta,\ell}(s,c)\,b^H_\ell(f),
+\label{eq:H-star-basis}
 \\
-\nu_{m,s,j}
+V_s^\star(f,c)
 &=
-\sum_{\ell=1}^{L_\nu}
-a^\nu_{m,s,\ell}\,
-b^\nu_\ell(f_{m,j}).
-\label{eq:raw-nu}
+\sum_{\ell=1}^{L_V}
+a^V_{\theta,\ell}(s,c)\,b^V_\ell(f).
+\label{eq:V-star-basis}
 \end{align}
 
-\subsubsection{Identifiability projection}
+Thus one global neural system parameterized by $\theta$ generates smooth
+sensor- and configuration-conditional calibration laws over frequency.
 
-The forward model \eqref{eq:hybrid-forward} is invariant under the campaign-wise transformation
+\subsubsection{Campaign-specific deviations}
+
+For offline campaign $m$, define campaign-specific residual corrections
+\[
+\delta^\Gamma_{m,s,j}\in\mathbb R,
+\qquad
+\delta^H_{m,s,j}\in\mathbb R,
+\qquad
+\delta^V_{m,s,j}\in\mathbb R.
+\]
+
+Then the campaign-specific parameters used in
+\eqref{eq:offline-forward}--\eqref{eq:offline-gaussian} are
+\begin{align}
+G_{m,s,j}
+&=
+G_s^{(0)}(f_{m,j},c_m)\,
+\exp\!\Bigl(
+\Gamma_s^\star(f_{m,j},c_m)
++
+\delta^\Gamma_{m,s,j}
+\Bigr),
+\label{eq:campaign-gain}
+\\
+N_{m,s,j}
+&=
+\phi\!\Bigl(
+H_s^\star(f_{m,j},c_m)
++
+\delta^H_{m,s,j}
+\Bigr),
+\label{eq:campaign-floor}
+\\
+\sigma^2_{m,s,j}
+&=
+\sigma_{\min}^2
++
+\phi\!\Bigl(
+V_s^\star(f_{m,j},c_m)
++
+\delta^V_{m,s,j}
+\Bigr).
+\label{eq:campaign-var}
+\end{align}
+
+The role of $\delta^\Gamma,\delta^H,\delta^V$ is to absorb campaign-specific
+nuisance variation such as local thermal conditions, residual hardware state,
+or other nonpersistent effects during offline identification.
+
+\subsection{Identifiability}
+
+\subsubsection{Local campaign-scale nonidentifiability}
+
+For a fixed campaign $m$, the observation model is invariant under the
+transformation
 \[
 G_{m,s,j}\mapsto a_{m,j}G_{m,s,j},
 \qquad
@@ -227,471 +325,513 @@ S_{m,k,j}\mapsto a_{m,j}^{-1}S_{m,k,j},
 \qquad
 a_{m,j}>0.
 \]
-Therefore an identifiability constraint is required.
+Hence the multiplicative scale is not identifiable without an explicit
+reference convention.
 
-Let $G^{(0)}_{m,s,j}>0$ denote a nominal baseline gain. In the current project philosophy one may set
+\subsubsection{Global deployment-scale convention}
+
+To define a persistent deployment scale, choose positive weights
 \[
-G^{(0)}_{m,s,j}\equiv 1.
-\]
-
-We impose identifiability by projecting the unconstrained log-gain corrections to zero mean across the participating sensors:
-\begin{equation}
-\gamma_{m,s,j}
-=
-\bar\gamma_{m,s,j}
--
-\frac{1}{M_m}
-\sum_{r\in\mathcal S_m}
-\bar\gamma_{m,r,j},
+\pi_s>0,
 \qquad
-s\in\mathcal S_m,\ j=1,\dots,J_m.
-\label{eq:gamma-projection}
+\sum_{s=1}^{S_{\max}}\pi_s=1,
+\]
+and impose the global reference convention
+\begin{equation}
+\sum_{s=1}^{S_{\max}}
+\pi_s\,\Gamma_s^\star(f,c)=0
+\qquad
+\text{for all }(f,c).
+\label{eq:global-reference-convention}
 \end{equation}
 
-Then the multiplicative gains are
-\begin{equation}
-G_{m,s,j}
+Equivalently,
+\[
+\prod_{s=1}^{S_{\max}}
+\left(
+G_s^\star(f,c)
+\right)^{\pi_s}
 =
-G^{(0)}_{m,s,j}\exp(\gamma_{m,s,j}).
-\label{eq:gain-definition}
-\end{equation}
+\prod_{s=1}^{S_{\max}}
+\left(
+G_s^{(0)}(f,c)
+\right)^{\pi_s}.
+\]
 
-When $G^{(0)}_{m,s,j}\equiv 1$, \eqref{eq:gamma-projection} implies
+If $G_s^{(0)}(f,c)\equiv 1$, then
 \begin{equation}
-\frac{1}{M_m}\sum_{s\in\mathcal S_m}\gamma_{m,s,j}=0
-\quad\Longleftrightarrow\quad
-\prod_{s\in\mathcal S_m} G_{m,s,j}^{1/M_m}=1,
-\label{eq:geometric-mean-one}
+\prod_{s=1}^{S_{\max}}
+\left(
+G_s^\star(f,c)
+\right)^{\pi_s}
+=
+1.
+\label{eq:geom-mean-one-global}
 \end{equation}
-so the latent spectrum is defined on the campaign-specific network reference scale whose geometric mean gain equals one at each frequency bin.
 
-\subsubsection{Positive floor and positive variance}
+This fixes the persistent calibration laws on a global network reference
+scale. In implementation, \eqref{eq:global-reference-convention} can be
+enforced by subtracting the weighted mean across sensors from the raw neural
+log-gain outputs.
 
-Define the softplus map
+\subsubsection{Mean-zero campaign deviations}
+
+To prevent the campaign residual corrections from reintroducing arbitrary
+multiplicative scale, impose
+\begin{equation}
+\frac{1}{M_m}
+\sum_{s\in\mathcal S_m}
+\delta^\Gamma_{m,s,j}
+=
+0,
+\qquad
+j=1,\dots,J_m,
+\quad
+m=1,\dots,M_{\mathrm{cal}}.
+\label{eq:campaign-mean-zero-delta}
+\end{equation}
+
+Under \eqref{eq:campaign-mean-zero-delta}, the latent common spectrum
+$S_{m,k,j}$ of each calibration campaign is expressed on the persistent
+global deployment scale defined by
+\eqref{eq:global-reference-convention}.
+
+\paragraph{Remark.}
+If an absolute metrological reference is available, then
+\eqref{eq:global-reference-convention} may be replaced by an absolute anchor,
+for example by fixing
 \[
-\operatorname{sp}(x)=\log(1+e^x).
+\Gamma_{s_{\mathrm{ref}}}^\star(f,c)=0
 \]
-Then
-\begin{align}
-N_{m,s,j}
-&=
-\operatorname{sp}(\eta_{m,s,j}),
-\label{eq:noise-definition}
-\\
-\sigma^2_{m,s,j}
-&=
-\sigma^2_{\min}
-+
-\operatorname{sp}(\nu_{m,s,j}),
-\label{eq:variance-definition}
-\end{align}
-where $\sigma^2_{\min}>0$ is a small fixed variance floor.
+for a trusted reference instrument or by adding supervised absolute-loss
+terms. Without such information, the framework is rigorous only on the chosen
+reference scale.
 
-Thus the trainable model outputs campaign-specific calibration parameters
-\[
-\bigl\{G_{m,s,j},N_{m,s,j},\sigma^2_{m,s,j}\bigr\}_{s\in\mathcal S_m,\;j=1,\dots,J_m}
-\]
-through a single global parameter vector $\theta$ shared across all campaigns.
+\subsection{Offline latent-spectrum update}
 
-\subsection{Explicit latent-spectrum update}
-
-The latent spectrum is not produced by a free black-box decoder. Instead, given the amortized campaign-specific parameters $(G,N,\sigma^2)$, it is computed analytically by weighted least squares.
+For fixed values of $(\theta,\delta^\Gamma,\delta^H,\delta^V)$, the latent
+common spectrum in calibration campaign $m$ is estimated by weighted least
+squares.
 
 Define
-\begin{equation}
+\[
 \omega_{m,s,j}
 =
-\frac{1}{\sigma^2_{m,s,j}}.
-\label{eq:omega-definition}
-\end{equation}
-
-For any subset $\mathcal U_m\subseteq \mathcal S_m$, define the subset-specific latent-spectrum estimator
+\frac{1}{\sigma_{m,s,j}^2}.
+\]
+Then
 \begin{equation}
-\widehat S_{m,k,j}^{(\mathcal U_m)}
+\widehat S_{m,k,j}
 =
 \left[
 \frac{
-\sum_{s\in\mathcal U_m}
+\sum_{s\in\mathcal S_m}
 \omega_{m,s,j}\,G_{m,s,j}\,
-\bigl(Y_{m,s,k,j}-N_{m,s,j}\bigr)
+\bigl(
+Y_{m,s,k,j}-N_{m,s,j}
+\bigr)
 }{
-\sum_{s\in\mathcal U_m}
+\sum_{s\in\mathcal S_m}
 \omega_{m,s,j}\,G_{m,s,j}^2
 }
-\right]_+.
-\label{eq:subset-latent-estimator}
-\end{equation}
-
-At training time, to avoid trivial leakage into masked sensors, the latent spectrum is inferred from the visible subset:
-\begin{equation}
-\widehat S_{m,k,j}
-:=
-\widehat S_{m,k,j}^{(\mathcal V_m)}.
-\label{eq:train-latent-estimator}
-\end{equation}
-
-At inference time on a new campaign, all available sensors are visible, so
-\begin{equation}
-\widehat S_{m,k,j}
-:=
-\widehat S_{m,k,j}^{(\mathcal S_m)}.
-\label{eq:test-latent-estimator}
-\end{equation}
-
-The returned calibrated measurements are then
-\begin{equation}
-\widehat X_{m,s,k,j}
-=
-\frac{
-\bigl[
-Y_{m,s,k,j}-N_{m,s,j}
-\bigr]_+
-}{
-G_{m,s,j}
-}.
-\label{eq:return-calibrated}
-\end{equation}
-
-Thus the complete output of the model for campaign $m$ is
-\[
-\Bigl(
-\widehat X_m,\;
-\widehat S_m,\;
-G_m,\;
-N_m,\;
-\sigma^2_m
-\Bigr).
-\]
-
-\subsection{Self-supervised masked-sensor training objective}
-
-\subsubsection{Visible and masked subsets}
-
-During training, each campaign sensor set is randomly partitioned into
-\[
-\mathcal S_m = \mathcal V_m \,\dot\cup\, \mathcal B_m,
-\]
-where
-\begin{itemize}
-    \item $\mathcal V_m$ is the visible subset used by the encoder;
-    \item $\mathcal B_m$ is the masked subset used for self-supervised prediction.
-\end{itemize}
-
-The encoder receives only the visible sensors, but the model must still predict calibration parameters for all sensors.
-
-\subsubsection{Masked negative log-likelihood}
-
-The primary self-supervised objective is the masked negative log-likelihood
-\begin{equation}
-\mathcal L^{(m)}_{\mathrm{mask}}
-=
-\sum_{s\in\mathcal B_m}
-\sum_{k=1}^{K_m}
-\sum_{j=1}^{J_m}
-\left[
-\frac{
-\bigl(
-Y_{m,s,k,j}
--
-G_{m,s,j}\widehat S_{m,k,j}
--
-N_{m,s,j}
-\bigr)^2
-}{
-2\sigma^2_{m,s,j}
-}
-+
-\frac{1}{2}\log \sigma^2_{m,s,j}
-\right].
-\label{eq:mask-nll}
-\end{equation}
-
-Because $\widehat S_{m,k,j}$ is computed from the visible subset only, the masked sensors cannot be reconstructed by direct copying. The model must infer transferable campaign structure from the visible sensors, sensor identities, and configuration metadata.
-
-\subsubsection{Optional visible reconstruction term}
-
-To stabilize optimization, one may include a visible reconstruction term
-\begin{equation}
-\mathcal L^{(m)}_{\mathrm{vis}}
-=
-\sum_{s\in\mathcal V_m}
-\sum_{k=1}^{K_m}
-\sum_{j=1}^{J_m}
-\left[
-\frac{
-\bigl(
-Y_{m,s,k,j}
--
-G_{m,s,j}\widehat S_{m,k,j}
--
-N_{m,s,j}
-\bigr)^2
-}{
-2\sigma^2_{m,s,j}
-}
-+
-\frac{1}{2}\log \sigma^2_{m,s,j}
-\right].
-\label{eq:visible-nll}
-\end{equation}
-
-The visible term is optional because it is easier and may dominate training if over-weighted.
-
-\subsection{Frequency smoothness regularization}
-
-Since $G_{m,s,j}$, $N_{m,s,j}$, and $\sigma^2_{m,s,j}$ are functions of physical frequency, smoothness should be imposed with respect to the actual frequency grid $f_m$, which may be nonuniform.
-
-Let
-\[
-\tilde h_m
-=
-\operatorname{median}\bigl(f_{m,j+1}-f_{m,j}\bigr)_{j=1}^{J_m-1},
-\]
-and define normalized coordinates
-\[
-x_{m,1}=0,
-\qquad
-x_{m,j}
-=
-\sum_{u=1}^{j-1}
-\frac{f_{m,u+1}-f_{m,u}}{\tilde h_m},
-\qquad
-j=2,\dots,J_m.
-\]
-
-For $r=1,\dots,J_m-2$, set
-\[
-h^-_{m,r}=x_{m,r+1}-x_{m,r},
-\qquad
-h^+_{m,r}=x_{m,r+2}-x_{m,r+1}.
-\]
-Define the nonuniform three-point second-difference operator $D_{m,2}\in\mathbb R^{(J_m-2)\times J_m}$ row-wise by
-\begin{equation}
-(D_{m,2} z)_r
-=
-\frac{2}{h^-_{m,r}(h^-_{m,r}+h^+_{m,r})}z_r
--
-\frac{2}{h^-_{m,r}h^+_{m,r}}z_{r+1}
-+
-\frac{2}{h^+_{m,r}(h^-_{m,r}+h^+_{m,r})}z_{r+2}.
-\label{eq:nonuniform-second-difference}
-\end{equation}
-
-Then the smoothness penalty is
-\begin{equation}
-\mathcal R^{(m)}_{\mathrm{smooth}}
-=
-\sum_{s\in\mathcal S_m}
-\left[
-\lambda_\gamma
-\left\|
-D_{m,2}\gamma_{m,s,\cdot}
-\right\|_2^2
-+
-\lambda_\eta
-\left\|
-D_{m,2}\eta_{m,s,\cdot}
-\right\|_2^2
-+
-\lambda_\nu
-\left\|
-D_{m,2}\nu_{m,s,\cdot}
-\right\|_2^2
-\right],
-\label{eq:smoothness-penalty}
-\end{equation}
-where
-\[
-\gamma_{m,s,\cdot}=(\gamma_{m,s,1},\dots,\gamma_{m,s,J_m})^\top,
-\quad
-\eta_{m,s,\cdot}=(\eta_{m,s,1},\dots,\eta_{m,s,J_m})^\top,
-\quad
-\nu_{m,s,\cdot}=(\nu_{m,s,1},\dots,\nu_{m,s,J_m})^\top.
-\]
-
-The gain regularizer acts on log-gain corrections, not on $G$ directly; likewise the additive floor regularizer acts on the softplus preimage $\eta$, not on $N$ directly.
-
-\subsection{Optional reliable-sensor anchoring}
-
-If a campaign-level reliable sensor $s_m^\star\in\mathcal S_m$ is available from a separate ranking diagnostic, one may encourage that sensor to remain close to the nominal gain baseline through
-\begin{equation}
-\mathcal R^{(m)}_{\mathrm{anchor}}
-=
-\sum_{j=1}^{J_m}
-\gamma_{m,s_m^\star,j}^2.
-\label{eq:anchor-penalty}
-\end{equation}
-
-This is a soft prior, not a hard equality constraint.
-
-\subsection{Optional cross-configuration coefficient regularization}
-
-The shared network weights already transfer information across configurations. If stronger configuration continuity is desired, one may add an explicit penalty on campaigns that share at least one sensor.
-
-Let $\mathcal P$ be a set of campaign pairs $(m,m')$ such that
-\[
-\mathcal S_m \cap \mathcal S_{m'} \neq \varnothing.
-\]
-For each pair, define a configuration kernel
-\begin{equation}
-K(c_m,c_{m'})
-=
-\exp\!\left(
--\frac{
-\|D_c(c_m-c_{m'})\|_2^2
-}{\tau_c^2}
-\right),
-\label{eq:config-kernel}
-\end{equation}
-where $D_c$ rescales the configuration coordinates into comparable units and $\tau_c>0$ is a bandwidth parameter.
-
-Then one may penalize coefficient discrepancies for sensors observed in both campaigns:
-\begin{equation}
-\mathcal R_{\mathrm{cfg}}
-=
-\sum_{(m,m')\in\mathcal P}
-K(c_m,c_{m'})
-\sum_{s\in\mathcal S_m\cap\mathcal S_{m'}}
-\left[
-\alpha_\gamma
-\|a^\gamma_{m,s}-a^\gamma_{m',s}\|_2^2
-+
-\alpha_\eta
-\|a^\eta_{m,s}-a^\eta_{m',s}\|_2^2
-+
-\alpha_\nu
-\|a^\nu_{m,s}-a^\nu_{m',s}\|_2^2
-\right].
-\label{eq:config-regularizer}
-\end{equation}
-
-This term is optional. It encodes the prior that nearby configurations should induce nearby calibration curves for the same hardware, without forcing exact equality across configurations.
-
-\subsection{Global training objective}
-
-The global objective is
-\begin{equation}
-\mathcal L(\theta)
-=
-\frac{1}{M_{\mathrm{camp}}}
-\sum_{m=1}^{M_{\mathrm{camp}}}
-\mathbb E_{\mathcal V_m}
-\Bigl[
-\mathcal L^{(m)}_{\mathrm{mask}}
-+
-\lambda_{\mathrm{vis}}
-\mathcal L^{(m)}_{\mathrm{vis}}
-+
-\mathcal R^{(m)}_{\mathrm{smooth}}
-+
-\lambda_{\mathrm{anchor}}
-\mathcal R^{(m)}_{\mathrm{anchor}}
-\Bigr]
-+
-\lambda_{\mathrm{cfg}}\mathcal R_{\mathrm{cfg}}
-+
-\lambda_{\mathrm{wd}}\|\theta\|_2^2.
-\label{eq:global-objective}
-\end{equation}
-Here:
-\begin{itemize}
-    \item the expectation over $\mathcal V_m$ denotes random visible/masked sensor splits during stochastic training;
-    \item $\lambda_{\mathrm{vis}},\lambda_{\mathrm{anchor}},\lambda_{\mathrm{cfg}},\lambda_{\mathrm{wd}}\ge 0$ are scalar hyperparameters;
-    \item if a term is not used, its coefficient is set to zero.
-\end{itemize}
-
-If external reference calibrations are available for some campaigns, a supervised term may be added. For example, if reference corrected measurements $X^{\mathrm{ref}}_{m,s,k,j}$ are available, one may augment \eqref{eq:global-objective} by
-\begin{equation}
-\mathcal L_{\mathrm{sup}}
-=
-\sum_{m\in\mathcal M_{\mathrm{sup}}}
-\sum_{s\in\mathcal S_m}
-\sum_{k=1}^{K_m}
-\sum_{j=1}^{J_m}
-\left(
-\widehat X_{m,s,k,j}
--
-X^{\mathrm{ref}}_{m,s,k,j}
-\right)^2,
-\label{eq:optional-supervised-loss}
-\end{equation}
-with an additional multiplier $\lambda_{\mathrm{sup}}\ge 0$.
-
-\subsection{Inference on a new campaign}
-
-Let
-\[
-\mathcal C_\dagger
-=
-\bigl(
-\mathcal S_\dagger,\,
-K_\dagger,\,
-f_\dagger,\,
-c_\dagger,\,
-Y_\dagger
-\bigr)
-\]
-be a new campaign. At inference time all available sensors are visible:
-\[
-\mathcal V_\dagger = \mathcal S_\dagger.
-\]
-The trained model produces
-\[
-\{G_{\dagger,s,j},N_{\dagger,s,j},\sigma^2_{\dagger,s,j}\}_{s\in\mathcal S_\dagger,\;j=1,\dots,J_\dagger}
-\]
-through equations \eqref{eq:sensor-summary-visible}--\eqref{eq:variance-definition}, then computes
-\[
-\widehat S_{\dagger,k,j}
-=
-\left[
-\frac{
-\sum_{s\in\mathcal S_\dagger}
-\omega_{\dagger,s,j}G_{\dagger,s,j}
-\bigl(
-Y_{\dagger,s,k,j}-N_{\dagger,s,j}
-\bigr)
-}{
-\sum_{s\in\mathcal S_\dagger}
-\omega_{\dagger,s,j}G_{\dagger,s,j}^2
-}
 \right]_+,
-\]
-and finally returns
+\label{eq:latent-update}
+\end{equation}
+where $[x]_+=\max\{x,0\}$ or, in implementation, clipping to a small positive
+numerical floor $\varepsilon_S>0$.
+
+\subsection{Offline objective}
+
+Let
 \[
-\widehat X_{\dagger,s,k,j}
+\Delta
 =
+\bigl\{
+\delta^\Gamma_{m,s,j},
+\delta^H_{m,s,j},
+\delta^V_{m,s,j}
+\bigr\}_{m,s,j}
+\]
+collect all campaign-specific deviations.
+
+\subsubsection{Negative log-likelihood term}
+
+The Gaussian negative log-likelihood is
+\begin{equation}
+\mathcal L_{\mathrm{nll}}(\theta,\Delta,S)
+=
+\frac{1}{2}
+\sum_{m=1}^{M_{\mathrm{cal}}}
+\sum_{s\in\mathcal S_m}
+\sum_{k=1}^{K_m}
+\sum_{j=1}^{J_m}
+\left[
+\log \sigma_{m,s,j}^2
++
 \frac{
-\bigl[
-Y_{\dagger,s,k,j}-N_{\dagger,s,j}
-\bigr]_+
+\bigl(
+Y_{m,s,k,j}
+-
+G_{m,s,j}S_{m,k,j}
+-
+N_{m,s,j}
+\bigr)^2
 }{
-G_{\dagger,s,j}
-}.
-\]
+\sigma_{m,s,j}^2
+}
+\right].
+\label{eq:nll}
+\end{equation}
 
-Hence the trained system is a single global amortized model that maps
+\subsubsection{Smoothness of campaign deviations}
+
+To regularize campaign-specific corrections across frequency, define a
+second-difference operator $D_{m,2}$ on the frequency grid $f_m$.
+For a uniform grid it may be the usual second difference; for a nonuniform
+grid one should use the corresponding nonuniform second-difference operator.
+
+The campaign-deviation regularizer is
+\begin{equation}
+\mathcal R_{\mathrm{dev}}(\Delta)
+=
+\sum_{m=1}^{M_{\mathrm{cal}}}
+\sum_{s\in\mathcal S_m}
+\Bigl[
+\lambda^\Gamma_{\mathrm{smooth}}
+\|D_{m,2}\delta^\Gamma_{m,s,\cdot}\|_2^2
++
+\lambda^H_{\mathrm{smooth}}
+\|D_{m,2}\delta^H_{m,s,\cdot}\|_2^2
++
+\lambda^V_{\mathrm{smooth}}
+\|D_{m,2}\delta^V_{m,s,\cdot}\|_2^2
+\Bigr],
+\label{eq:Rdev-smooth}
+\end{equation}
+where, for example,
 \[
-(Y_\dagger,\mathcal S_\dagger,f_\dagger,c_\dagger)
-\longmapsto
-(\widehat X_\dagger,\widehat S_\dagger,G_\dagger,N_\dagger,\sigma^2_\dagger),
+\delta^\Gamma_{m,s,\cdot}
+=
+(\delta^\Gamma_{m,s,1},\dots,\delta^\Gamma_{m,s,J_m})^\top.
 \]
-while still preserving an explicit and interpretable calibration operator.
 
-\subsection{Interpretation}
+\subsubsection{Shrinkage of campaign deviations}
 
-The model should be read as follows.
+Because the campaign deviations are nuisance terms, they should shrink toward
+zero:
+\begin{equation}
+\mathcal R_{\mathrm{shrink}}(\Delta)
+=
+\sum_{m=1}^{M_{\mathrm{cal}}}
+\sum_{s\in\mathcal S_m}
+\Bigl[
+\lambda^\Gamma_0
+\|\delta^\Gamma_{m,s,\cdot}\|_2^2
++
+\lambda^H_0
+\|\delta^H_{m,s,\cdot}\|_2^2
++
+\lambda^V_0
+\|\delta^V_{m,s,\cdot}\|_2^2
+\Bigr].
+\label{eq:Rdev-shrink}
+\end{equation}
+
+\subsubsection{Weight decay on the persistent model}
+
+The persistent neural model is regularized by
+\begin{equation}
+\mathcal R_\theta(\theta)
+=
+\lambda_\theta \|\theta\|_2^2.
+\label{eq:Rtheta}
+\end{equation}
+
+\subsubsection{Optional reliable-sensor anchor}
+
+If campaign $m$ provides a reliable sensor index $s_m^\star\in\mathcal S_m$,
+one may add a weak anchor on its campaign residual gain correction:
+\begin{equation}
+\mathcal R_{\mathrm{rel}}(\Delta)
+=
+\sum_{m=1}^{M_{\mathrm{cal}}}
+\lambda_{\mathrm{rel}}
+\sum_{j=1}^{J_m}
+\bigl(
+\delta^\Gamma_{m,s_m^\star,j}
+\bigr)^2.
+\label{eq:Rrel}
+\end{equation}
+This is optional and should remain soft.
+
+\subsubsection{Total offline training objective}
+
+The total offline objective is
+\begin{equation}
+\mathcal J_{\mathrm{off}}(\theta,\Delta,S)
+=
+\mathcal L_{\mathrm{nll}}(\theta,\Delta,S)
++
+\mathcal R_{\mathrm{dev}}(\Delta)
++
+\mathcal R_{\mathrm{shrink}}(\Delta)
++
+\mathcal R_\theta(\theta)
++
+\mathcal R_{\mathrm{rel}}(\Delta),
+\label{eq:Joff}
+\end{equation}
+subject to the identifiability constraints
+\eqref{eq:global-reference-convention} and
+\eqref{eq:campaign-mean-zero-delta}.
+
+\subsection{Offline estimation problem}
+
+The offline fit is the constrained optimization problem
+\begin{equation}
+(\widehat\theta,\widehat\Delta,\widehat S)
+\in
+\operatorname*{arg\,min}_{\theta,\Delta,S}
+\mathcal J_{\mathrm{off}}(\theta,\Delta,S)
+\quad
+\text{subject to }
+\eqref{eq:global-reference-convention}
+\text{ and }
+\eqref{eq:campaign-mean-zero-delta}.
+\label{eq:offline-estimation-problem}
+\end{equation}
+
+A practical implementation may use block alternation:
 
 \begin{enumerate}
-    \item There is one global parameter vector $\theta$ shared across all campaigns.
-    \item For each new campaign, the network produces campaign-specific calibration parameters conditioned on the campaign measurements, the participating sensors, and the acquisition configuration.
-    \item The latent common spectrum is then recovered by an explicit weighted least-squares consensus step rather than by an unconstrained black-box decoder.
-    \item The returned calibrated PSD tensor is obtained by subtracting the inferred additive floors and dividing by the inferred multiplicative gains.
+    \item for fixed $(\theta,\Delta)$, update $S$ by
+    \eqref{eq:latent-update};
+    \item for fixed $S$, update $(\theta,\Delta)$ by gradient-based
+    optimization of \eqref{eq:Joff};
+    \item project the persistent and campaign log-gain corrections onto the
+    constraints \eqref{eq:global-reference-convention} and
+    \eqref{eq:campaign-mean-zero-delta}.
 \end{enumerate}
 
-Thus the model is simultaneously:
+\subsection{Persistent deployment laws after offline training}
+
+Once the offline fit is complete, the deployed persistent laws are
+\begin{align}
+\widehat G_s^\star(f,c)
+&=
+G_s^{(0)}(f,c)
+\exp\!\bigl(
+\Gamma_{s,\widehat\theta}^\star(f,c)
+\bigr),
+\label{eq:deployed-persistent-gain}
+\\
+\widehat N_s^\star(f,c)
+&=
+\phi\!\bigl(
+H_{s,\widehat\theta}^\star(f,c)
+\bigr),
+\label{eq:deployed-persistent-floor}
+\\
+\widehat \sigma_s^{2,\star}(f,c)
+&=
+\sigma_{\min}^2
++
+\phi\!\bigl(
+V_{s,\widehat\theta}^\star(f,c)
+\bigr).
+\label{eq:deployed-persistent-var}
+\end{align}
+
+These are the only quantities needed for online deployment in arbitrary
+scenes.
+
+\subsection{Online deployment on arbitrary scenes}
+
+\subsubsection{Deployment data}
+
+Consider a deployed sensor $s^\dagger\in\{1,\dots,S_{\max}\}$ operating under
+configuration $c^\dagger$ on a retained frequency grid
+\[
+f^\dagger=(f^\dagger_1,\dots,f^\dagger_{J^\dagger}).
+\]
+Suppose it produces observations
+\[
+Y^\dagger=\{Y^\dagger_{k,j}\},
+\qquad
+k=1,\dots,K^\dagger,\quad
+j=1,\dots,J^\dagger.
+\]
+
+No assumption is made that any other deployed sensor observes the same scene.
+
+\subsubsection{Deployment observation model}
+
+For deployment, the physically relevant model is
+\begin{equation}
+Y^\dagger_{k,j}
+=
+G^\dagger_j\,X^\dagger_{k,j}
++
+N^\dagger_j
++
+\varepsilon^\dagger_{k,j},
+\label{eq:deployment-forward}
+\end{equation}
+where:
 \begin{itemize}
-    \item \emph{configuration-conditional}, because the generated calibration depends on $c_m$;
-    \item \emph{campaign-specific}, because the outputs are inferred separately for each campaign;
-    \item \emph{amortized}, because one shared network replaces fitting a completely separate optimization model from scratch for every campaign;
-    \item \emph{hybrid and interpretable}, because the forward calibration equation remains explicit.
+    \item $X^\dagger_{k,j}$ is the \emph{sensor-local} latent spectrum of the
+    deployed scene at that sensor;
+    \item $G^\dagger_j$ and $N^\dagger_j$ are the persistent laws evaluated
+    for that sensor and configuration;
+    \item there is no common-spectrum relation tying this $X^\dagger$ to any
+    other deployed sensor.
+\end{itemize}
+
+The deployed persistent calibration curves are
+\begin{align}
+\widehat G^\dagger_j
+&=
+\widehat G_{s^\dagger}^\star(f^\dagger_j,c^\dagger),
+\label{eq:deployed-Gdag}
+\\
+\widehat N^\dagger_j
+&=
+\widehat N_{s^\dagger}^\star(f^\dagger_j,c^\dagger),
+\label{eq:deployed-Ndag}
+\\
+\widehat \sigma^{2,\dagger}_j
+&=
+\widehat \sigma_{s^\dagger}^{2,\star}(f^\dagger_j,c^\dagger).
+\label{eq:deployed-sigdag}
+\end{align}
+
+\subsubsection{Online calibration map}
+
+The online calibrated PSD is
+\begin{equation}
+\widehat X^\dagger_{k,j}
+=
+\frac{
+\bigl[
+Y^\dagger_{k,j}
+-
+\widehat N^\dagger_j
+\bigr]_+
+}{
+\widehat G^\dagger_j
+}.
+\label{eq:online-calibration-map}
+\end{equation}
+
+If one prefers unclipped subtraction, then replace $[\cdot]_+$ by identity and
+handle negative corrected values downstream. However, nonnegativity clipping is
+often numerically safer for PSD-like quantities.
+
+\subsubsection{Per-bin deployment uncertainty}
+
+A first-order variance propagation gives
+\begin{equation}
+\operatorname{Var}
+\bigl(
+\widehat X^\dagger_{k,j}
+\mid
+s^\dagger,c^\dagger
+\bigr)
+\approx
+\frac{
+\widehat \sigma^{2,\dagger}_j
+}{
+(\widehat G^\dagger_j)^2
+}.
+\label{eq:deployment-variance}
+\end{equation}
+
+This is the observation-noise contribution only. It does not include
+epistemic uncertainty in $\widehat\theta$ unless such uncertainty is modeled
+explicitly, for example through ensembling or variational methods.
+
+\subsection{What transfers and what does not}
+
+The same-scene assumption is used only in the offline calibration corpus to
+identify persistent sensor/configuration behavior. It does \emph{not} appear in
+the deployment rule \eqref{eq:online-calibration-map}.
+
+Thus the transfer logic is:
+
+\begin{enumerate}
+    \item offline same-scene campaigns identify
+    \[
+    \widehat G_s^\star(f,c),\qquad
+    \widehat N_s^\star(f,c),\qquad
+    \widehat \sigma_s^{2,\star}(f,c);
+    \]
+    \item online deployment applies those laws to a single sensor in an
+    arbitrary scene, with no requirement that other sensors observe the same
+    latent spectrum.
+\end{enumerate}
+
+\subsection{Optional extension: slowly varying device-state covariates}
+
+If slowly varying device-health covariates are available, such as temperature,
+clock error diagnostics, age, or self-test features, let
+\[
+z_{m,s}\in\mathcal Z
+\]
+denote such covariates in offline campaign $m$ and
+\[
+z^\dagger\in\mathcal Z
+\]
+denote them at deployment time.
+
+Then one may replace the persistent laws by
+\[
+\Gamma_s^\star(f,c,z),\qquad
+H_s^\star(f,c,z),\qquad
+V_s^\star(f,c,z),
+\]
+with the same structure as above. In that case the deployed laws become
+\[
+\widehat G_{s^\dagger}^\star(f^\dagger_j,c^\dagger,z^\dagger),\qquad
+\widehat N_{s^\dagger}^\star(f^\dagger_j,c^\dagger,z^\dagger),
+\]
+and so on. This extension is optional; if such covariates are unavailable, one
+simply omits $z$.
+
+\subsection{Summary}
+
+The two-level model consists of:
+
+\begin{enumerate}
+    \item a global persistent neural law
+    \[
+    (s,f,c)\mapsto
+    \bigl(
+    G_s^\star(f,c),
+    N_s^\star(f,c),
+    \sigma_s^{2,\star}(f,c)
+    \bigr),
+    \]
+    learned offline from colocated same-scene campaigns;
+    \item campaign-specific nuisance deviations used only during offline
+    fitting;
+    \item an online per-sensor calibration map
+    \[
+    \widehat X^\dagger_{k,j}
+    =
+    \frac{
+    [Y^\dagger_{k,j}-\widehat N^\dagger_j]_+
+    }{
+    \widehat G^\dagger_j
+    },
+    \]
+    which remains valid even when deployed sensors observe different spectra
+    at different locations.
+\end{enumerate}
+
+Therefore the model is simultaneously:
+\begin{itemize}
+    \item \emph{configuration-conditional};
+    \item \emph{sensor-specific};
+    \item \emph{trained from same-scene campaigns};
+    \item \emph{deployable to arbitrary scenes without a common-field assumption}.
 \end{itemize}
