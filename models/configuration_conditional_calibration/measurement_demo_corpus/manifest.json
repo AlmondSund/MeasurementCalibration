@@ -1,0 +1,142 @@
+{
+  "artifact_type": "configuration_conditional_calibration_model",
+  "basis_config": {
+    "n_floor_basis": 8,
+    "n_gain_basis": 10,
+    "n_variance_basis": 8,
+    "spline_degree": 3
+  },
+  "campaigns": [
+    {
+      "campaign_label": "MeasurementCalibration",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 0.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 62.0
+      },
+      "n_acquisitions": 179,
+      "n_frequencies": 4096,
+      "objective_value": 171201887.95880857,
+      "reliable_sensor_id": "Node2",
+      "sensor_ids": [
+        "Node1",
+        "Node2",
+        "Node3",
+        "Node5",
+        "Node9"
+      ]
+    },
+    {
+      "campaign_label": "test-calibration",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 0.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 62.0
+      },
+      "n_acquisitions": 4,
+      "n_frequencies": 4096,
+      "objective_value": 3256442.2681158697,
+      "reliable_sensor_id": "Node3",
+      "sensor_ids": [
+        "Node1",
+        "Node10",
+        "Node2",
+        "Node3"
+      ]
+    }
+  ],
+  "created_at_utc": "2026-03-11T20:05:07.619985+00:00",
+  "extra_summary": {
+    "fit_duration_s": 114.12829798299936,
+    "n_campaigns": 2
+  },
+  "fit_config": {
+    "adam_beta1": 0.9,
+    "adam_beta2": 0.999,
+    "adam_epsilon": 1e-08,
+    "adaptive_variance_floor_ratio": 0.0001,
+    "divergence_tolerance_ratio": 10.0,
+    "early_stopping_patience": 5,
+    "early_stopping_relative_tolerance": 0.0001,
+    "gradient_clip_norm": 10.0,
+    "lambda_delta_floor_shrink": 0.2,
+    "lambda_delta_floor_smooth": 1.0,
+    "lambda_delta_gain_shrink": 0.2,
+    "lambda_delta_gain_smooth": 1.0,
+    "lambda_delta_variance_shrink": 0.2,
+    "lambda_delta_variance_smooth": 1.0,
+    "lambda_reliable_sensor_anchor": 0.1,
+    "learning_rate": 0.03,
+    "n_gradient_steps": 20,
+    "n_outer_iterations": 8,
+    "random_seed": 0,
+    "refresh_campaign_variance_from_residuals": true,
+    "select_best_outer_iterate": true,
+    "sigma_min": 1e-08,
+    "variance_refresh_ridge": 1e-06,
+    "weight_decay": 0.0001
+  },
+  "fit_diagnostics": {
+    "final_objective_value": 174458330.2896246,
+    "n_completed_outer_iterations": 8,
+    "selected_from_best_iterate": false,
+    "selected_objective_value": 174458330.2896246,
+    "selected_outer_iteration": 7,
+    "terminated_early": false,
+    "termination_reason": "completed_all_iterations"
+  },
+  "model_config": {
+    "configuration_latent_dim": 4,
+    "sensor_embedding_dim": 4
+  },
+  "parameters_file": "calibration_parameters.npz",
+  "provenance": {
+    "corpus_fingerprint": "57900947d8735c9a5f4c740177bc95288641730e91f7d97a3ef20e243c495dec",
+    "git_branch": "main",
+    "git_commit": "0907303fd3c58854611e164771c8c9b08b99f460",
+    "git_dirty": true,
+    "numpy_version": "2.4.2",
+    "parameters_sha256": "dd93b968b1c36694992f7bed61d37481c07c4655589c23e94d75ba275af67046",
+    "platform": "Linux-6.12.73+deb13-amd64-x86_64-with-glibc2.41",
+    "python_version": "3.13.5",
+    "scipy_version": "1.17.1",
+    "sensor_summary_sha256": "44ab61192aa79197dc7c16b2b2223b64162d9c7aa2c7db44d82ff8cf49a837df"
+  },
+  "schema_version": 2,
+  "sensor_ids": [
+    "Node1",
+    "Node10",
+    "Node2",
+    "Node3",
+    "Node5",
+    "Node9"
+  ],
+  "sensor_reference_weight": {
+    "Node1": 0.16666666666666666,
+    "Node10": 0.16666666666666666,
+    "Node2": 0.16666666666666666,
+    "Node3": 0.16666666666666666,
+    "Node5": 0.16666666666666666,
+    "Node9": 0.16666666666666666
+  },
+  "sensor_summary_file": "sensor_summary.csv",
+  "training_summary": {
+    "effective_variance_floor_power2": 1.3824905669326237e-06,
+    "mean_campaign_objective": 87229165.11346222,
+    "n_campaigns": 2,
+    "n_sensors": 6,
+    "objective_end": 174458330.2896246,
+    "objective_selected": 174458330.2896246,
+    "objective_start": 840950858.0771962,
+    "selected_outer_iteration": 7,
+    "terminated_early": 0
+  }
+}
