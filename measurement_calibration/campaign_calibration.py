@@ -394,6 +394,103 @@ def prepare_calibration_corpus(
     )
 
 
+def resolve_global_excluded_sensor_ids_by_campaign(
+    campaign_labels: Sequence[str],  # Campaigns that participate in the workflow
+    excluded_sensor_ids: Collection[
+        str
+    ],  # Global node exclusions requested by the caller
+    campaigns_root: Path = DEFAULT_CAMPAIGNS_DATA_DIR,
+    sensor_file_pattern: str = "*.csv",
+) -> dict[str, tuple[str, ...]]:
+    """Resolve one global exclusion list into campaign-specific exclusions.
+
+    Purpose
+    -------
+    Notebook and application workflows often want to express exclusions once,
+    for example ``["Node9", "Node10"]``, and apply them consistently across a
+    multi-campaign training or deployment path. Campaigns rarely expose the
+    exact same sensor roster, so this helper intersects the requested global
+    exclusions with each campaign's available sensors.
+
+    Parameters
+    ----------
+    campaign_labels:
+        Campaign labels that should participate in the analysis.
+    excluded_sensor_ids:
+        Global sensor ids to exclude whenever they exist in a selected
+        campaign.
+    campaigns_root:
+        Root directory that contains ``data/campaigns/<campaign_label>``.
+    sensor_file_pattern:
+        Glob pattern used to discover sensor CSV files for each campaign.
+
+    Returns
+    -------
+    dict[str, tuple[str, ...]]
+        One entry per requested campaign label, containing the sensor ids that
+        should actually be excluded for that campaign.
+
+    Side Effects
+    ------------
+    Performs filesystem reads through ``FileSystemCampaignSensorDataRepository``
+    to discover each campaign's available sensor files.
+
+    Raises
+    ------
+    ValueError
+        If a requested excluded sensor id does not exist in any selected
+        campaign. This keeps global typo handling explicit instead of silently
+        accepting dead configuration.
+    """
+
+    resolved_campaign_labels = tuple(
+        str(campaign_label) for campaign_label in campaign_labels
+    )
+    requested_excluded_sensor_ids = tuple(
+        sorted(
+            {
+                str(sensor_id).strip()
+                for sensor_id in excluded_sensor_ids
+                if str(sensor_id).strip()
+            }
+        )
+    )
+    if not resolved_campaign_labels:
+        return {}
+    if not requested_excluded_sensor_ids:
+        return {campaign_label: () for campaign_label in resolved_campaign_labels}
+
+    repository = FileSystemCampaignSensorDataRepository(
+        campaigns_root=campaigns_root,
+        sensor_file_pattern=sensor_file_pattern,
+    )
+    resolved_excluded_sensor_ids_by_campaign: dict[str, tuple[str, ...]] = {}
+    matched_sensor_id_set: set[str] = set()
+
+    for campaign_label in resolved_campaign_labels:
+        available_sensor_ids = tuple(
+            sorted(repository.load_campaign_sensor_series(campaign_label))
+        )
+        resolved_sensor_ids = tuple(
+            sensor_id
+            for sensor_id in requested_excluded_sensor_ids
+            if sensor_id in available_sensor_ids
+        )
+        matched_sensor_id_set.update(resolved_sensor_ids)
+        resolved_excluded_sensor_ids_by_campaign[campaign_label] = resolved_sensor_ids
+
+    unknown_sensor_ids = sorted(
+        set(requested_excluded_sensor_ids).difference(matched_sensor_id_set)
+    )
+    if unknown_sensor_ids:
+        raise ValueError(
+            "Global excluded_sensor_ids contains sensors that do not exist in any "
+            f"selected campaign: {unknown_sensor_ids}"
+        )
+
+    return resolved_excluded_sensor_ids_by_campaign
+
+
 def fit_and_save_calibration_corpus_model(
     preparation: CalibrationCorpusPreparation,  # Prepared offline corpus
     output_dir: Path,  # Destination directory for the artifact bundle
@@ -559,4 +656,5 @@ __all__ = [
     "load_campaign_configuration",
     "prepare_calibration_campaign",
     "prepare_calibration_corpus",
+    "resolve_global_excluded_sensor_ids_by_campaign",
 ]

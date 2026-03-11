@@ -17,6 +17,7 @@ from .campaign_calibration import (
     load_campaign_configuration,
     prepare_calibration_campaign,
     prepare_calibration_corpus,
+    resolve_global_excluded_sensor_ids_by_campaign,
 )
 from .spectral_calibration import (
     CalibrationCampaign,
@@ -96,6 +97,7 @@ __all__ = [
     "power_linear_to_db",
     "prepare_calibration_campaign",
     "prepare_calibration_corpus",
+    "resolve_global_excluded_sensor_ids_by_campaign",
     "save_two_level_calibration_artifact",
     "write_sensor_calibration_summary_csv",
 ]

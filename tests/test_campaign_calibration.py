@@ -15,6 +15,7 @@ from measurement_calibration.campaign_calibration import (
     load_campaign_configuration,
     prepare_calibration_campaign,
     prepare_calibration_corpus,
+    resolve_global_excluded_sensor_ids_by_campaign,
 )
 from measurement_calibration.spectral_calibration import (
     FrequencyBasisConfig,
@@ -191,12 +192,73 @@ def test_prepare_calibration_corpus_and_fit_wrapper_write_artifact(
     assert len(loaded.result.campaign_states) == 2
 
 
+def test_resolve_global_excluded_sensor_ids_by_campaign_intersects_sensor_rosters(
+    tmp_path: Path,
+) -> None:
+    """Global exclusions should be applied only where the sensor actually exists."""
+
+    campaigns_root = tmp_path / "campaigns"
+    _write_campaign_fixture(
+        campaigns_root / "campaign-a",
+        central_freq_mhz=98.0,
+        span_mhz=20.0,
+        rbw_khz=10.0,
+        sensor_ids=("Node1", "Node2", "Node3", "Node9"),
+        sensor_offsets_db=(0.08, -0.05, 0.15, 12.0),
+    )
+    _write_campaign_fixture(
+        campaigns_root / "campaign-b",
+        central_freq_mhz=104.0,
+        span_mhz=18.0,
+        rbw_khz=15.0,
+        sensor_ids=("Node1", "Node2", "Node3", "Node10"),
+        sensor_offsets_db=(0.10, -0.08, 0.15, 9.5),
+    )
+
+    resolved = resolve_global_excluded_sensor_ids_by_campaign(
+        campaign_labels=("campaign-a", "campaign-b"),
+        excluded_sensor_ids=("Node9", "Node10"),
+        campaigns_root=campaigns_root,
+    )
+
+    assert resolved == {
+        "campaign-a": ("Node9",),
+        "campaign-b": ("Node10",),
+    }
+
+
+def test_resolve_global_excluded_sensor_ids_by_campaign_rejects_unknown_sensor_ids(
+    tmp_path: Path,
+) -> None:
+    """Global exclusions should still fail fast on sensor ids that never exist."""
+
+    campaigns_root = tmp_path / "campaigns"
+    _write_campaign_fixture(
+        campaigns_root / "campaign-a",
+        central_freq_mhz=98.0,
+        span_mhz=20.0,
+        rbw_khz=10.0,
+    )
+
+    try:
+        resolve_global_excluded_sensor_ids_by_campaign(
+            campaign_labels=("campaign-a",),
+            excluded_sensor_ids=("Node77",),
+            campaigns_root=campaigns_root,
+        )
+    except ValueError as error:
+        assert "Node77" in str(error)
+    else:
+        raise AssertionError("Unknown global excluded sensor ids should raise")
+
+
 def _write_campaign_fixture(
     campaign_dir: Path,
     central_freq_mhz: float,
     span_mhz: float,
     rbw_khz: float,
     sensor_offsets_db: tuple[float, float, float, float] = (0.08, -0.05, 0.15, 12.0),
+    sensor_ids: tuple[str, str, str, str] = ("Node1", "Node2", "Node3", "Node9"),
 ) -> None:
     """Create one deterministic campaign directory with metadata and sensor CSVs."""
 
@@ -229,7 +291,6 @@ def _write_campaign_fixture(
         ],
         dtype=np.float64,
     )
-    sensor_ids = ("Node1", "Node2", "Node3", "Node9")
     timestamp_series = (
         [1_000, 2_000, 3_000, 4_000, 5_000],
         [1_030, 2_030, 3_030, 4_030, 5_030],
