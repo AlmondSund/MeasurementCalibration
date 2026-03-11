@@ -3,12 +3,13 @@
 This module isolates the network and filesystem side effects required to:
 
 - Fetch paginated sensor measurements from the remote REST API.
-- Persist the payloads to CSV files under ``data/`` using the repository's
-  existing acquisition schema.
+- Resolve campaign downloads against the full Node1..Node10 sensor network.
+- Persist campaign payloads to CSV files under ``data/campaigns/`` using the
+  repository's acquisition schema.
 - Reload those CSV files into pandas data frames with parsed PSD arrays.
 
-The intent is to keep notebooks thin while making the boundary behavior
-testable without embedding raw HTTP logic inside notebook cells.
+The client does not own any campaign registry. Callers must provide the
+campaign label and numeric identifier explicitly for each download request.
 """
 
 from __future__ import annotations
@@ -28,20 +29,22 @@ import requests
 from urllib3.exceptions import InsecureRequestWarning
 
 
-DEFAULT_API_BASE_URL = "https://rsm.ane.gov.co:12443/api"
-DEFAULT_DATA_DOWNLOAD_DIR = Path("data") / "api_downloads"
-DEFAULT_CAMPAIGN_IDS: dict[str, int] = {
-    "no dc, no iq": 202,
-    "no dc, yes iq": 203,
-    "yes dc, yes iq": 204,
-    "test-calibration": 205,
-    "FM original": 176,
-}
-DEFAULT_SENSOR_MAC_BY_LABEL: dict[str, str] = {
+API_BASE_URL = "https://rsm.ane.gov.co:12443/api"
+CAMPAIGNS_DATA_DIR = Path("data") / "campaigns"
+
+# Keep a single source of truth for the deployed Node1..Node10 network.
+# If a future node MAC is not yet known, use PLACEHOLDER_MAC_ADDRESS until the
+# real hardware identifier is available.
+PLACEHOLDER_MAC_ADDRESS = "unknown"
+SENSOR_NETWORK_MAC_BY_LABEL: dict[str, str] = {
     "Node1": "d8:3a:dd:f7:1d:f2",
     "Node2": "d8:3a:dd:f4:4e:26",
     "Node3": "d8:3a:dd:f7:22:87",
+    "Node4": "d8:3a:dd:f6:fc:be",
     "Node5": "d8:3a:dd:f7:21:52",
+    "Node6": "d8:3a:dd:f7:1a:cc",
+    "Node7": "d8:3a:dd:f7:1d:b6",
+    "Node8": "d8:3a:dd:f7:1b:20",
     "Node9": "d8:3a:dd:f4:4e:d1",
     "Node10": "d8:3a:dd:f7:1d:90",
 }
@@ -86,6 +89,51 @@ class MeasurementApiError(RuntimeError):
     """Raised when the remote API response or payload contract is invalid."""
 
 
+class MeasurementApiRequestError(MeasurementApiError):
+    """Raised when the remote API request fails at the HTTP boundary."""
+
+    def __init__(
+        self,
+        message: str,  # Human-readable request failure description
+        *,
+        status_code: int | None = None,  # HTTP status code when available
+    ) -> None:
+        """Store the request failure with the optional HTTP status code."""
+
+        super().__init__(message)
+        self.status_code = status_code
+
+
+@dataclass(frozen=True)
+class CampaignDownloadResult:
+    """Materialized result of one campaign download request.
+
+    Parameters
+    ----------
+    campaign_label:
+        Human-readable campaign label provided by the caller.
+    campaign_id:
+        Numeric campaign identifier provided by the caller.
+    output_dir:
+        Directory where campaign CSV files were written.
+    requested_sensor_mac_by_label:
+        Effective sensor mapping used for this request after resolving any
+        caller-provided labels or overrides.
+    saved_csv_paths:
+        CSV path written for each sensor that produced retained measurements.
+    skipped_sensors:
+        Sensors that were skipped, together with the reason. Typical causes are
+        placeholder MACs, API 404 responses, or empty datasets after filtering.
+    """
+
+    campaign_label: str
+    campaign_id: int
+    output_dir: Path
+    requested_sensor_mac_by_label: dict[str, str]
+    saved_csv_paths: dict[str, Path]
+    skipped_sensors: dict[str, str]
+
+
 @dataclass(frozen=True)
 class MeasurementApiConfig:
     """Configuration for the measurement API HTTP boundary.
@@ -104,7 +152,7 @@ class MeasurementApiConfig:
         Number of measurements requested per paginated response.
     """
 
-    base_url: str = DEFAULT_API_BASE_URL
+    base_url: str = API_BASE_URL
     verify_tls: bool = False
     timeout_s: float = 30.0
     page_size: int = 5_000
@@ -211,56 +259,108 @@ class MeasurementApiClient:
 
     def download_campaign_csvs(
         self,
-        campaign_label: str,  # Human-readable name used for the output folder
-        campaign_id: int,  # Campaign identifier used for every sensor request
-        sensor_mac_by_label: Mapping[str, str],  # Output CSV name -> sensor MAC
-        output_root: Path = DEFAULT_DATA_DOWNLOAD_DIR,  # Root under data/
+        campaign_label: str,  # Human-readable campaign name for the output path
+        campaign_id: int,  # Numeric campaign identifier supplied by the caller
+        sensor_labels: Sequence[str] | None = None,  # Optional subset of nodes
+        sensor_mac_by_label: Mapping[str, str] | None = None,  # Optional MAC overrides
+        output_root: Path = CAMPAIGNS_DATA_DIR,  # Root under data/campaigns/
         drop_missing_pxx: bool = True,  # Skip rows without PSD payloads
-    ) -> dict[str, Path]:  # Saved CSV path per sensor label
-        """Download one campaign and persist each sensor payload as a CSV file.
+        skip_missing_sensors: bool = True,  # Adapt to partial campaign coverage
+    ) -> CampaignDownloadResult:
+        """Download one campaign and persist each available sensor payload as CSV.
 
         Parameters
         ----------
         campaign_label:
-            Human-readable campaign name. It is sanitized into a directory name.
+            Human-readable campaign label. It is sanitized into a directory
+            component, but it is otherwise owned by the caller.
         campaign_id:
-            Numeric campaign identifier.
+            Numeric campaign identifier supplied by the caller.
+        sensor_labels:
+            Optional subset of sensor labels, for example ``("Node1", "Node10")``.
+            When omitted, the full ``SENSOR_NETWORK_MAC_BY_LABEL`` constant is used.
         sensor_mac_by_label:
-            Mapping from a sensor label, for example ``"Node1"``, to the
-            corresponding MAC address expected by the API.
+            Optional explicit sensor mapping. This is useful when the caller
+            wants to override the repository sensor network or provide an ad-hoc
+            mapping for a campaign. It is mutually exclusive with
+            ``sensor_labels``.
         output_root:
             Root directory under which a campaign subdirectory is created.
         drop_missing_pxx:
             Whether rows with missing ``pxx`` arrays should be discarded before
             writing the CSV. This keeps the output directly usable by the
             plotting notebook and by the calibration loaders.
+        skip_missing_sensors:
+            Whether sensors that are unavailable for the campaign should be
+            recorded in ``skipped_sensors`` instead of aborting the whole
+            request. This enables one campaign request to adapt dynamically to
+            partial sensor coverage.
 
         Returns
         -------
-        dict[str, Path]
-            Saved CSV path for each requested sensor label.
+        CampaignDownloadResult
+            Structured summary of the materialized campaign download.
+
+        Side Effects
+        ------------
+        Issues one or more HTTPS GET requests per resolved sensor and writes one
+        CSV file per retained sensor dataset under ``output_root``.
         """
 
         if not campaign_label.strip():
             raise ValueError("campaign_label must be a non-empty string")
-        if not sensor_mac_by_label:
-            raise ValueError("sensor_mac_by_label must contain at least one sensor")
+        if campaign_id <= 0:
+            raise ValueError("campaign_id must be positive")
 
-        output_dir = Path(output_root) / _sanitize_path_component(campaign_label)
+        resolved_sensor_mac_by_label = resolve_sensor_mac_by_label(
+            sensor_labels=sensor_labels,
+            sensor_mac_by_label=sensor_mac_by_label,
+        )
+        output_dir = build_campaign_output_dir(
+            campaign_label=campaign_label,
+            output_root=output_root,
+        )
         output_dir.mkdir(parents=True, exist_ok=True)
 
         saved_paths: dict[str, Path] = {}
-        for sensor_label, mac_address in sensor_mac_by_label.items():
-            measurements = self.fetch_sensor_measurements(
-                mac_address=mac_address,
-                campaign_id=campaign_id,
-            )
+        skipped_sensors: dict[str, str] = {}
+
+        for sensor_label, mac_address in resolved_sensor_mac_by_label.items():
+            if _is_placeholder_mac_address(mac_address):
+                message = "Placeholder MAC address; sensor skipped"
+                if skip_missing_sensors:
+                    skipped_sensors[sensor_label] = message
+                    continue
+                raise ValueError(f"{sensor_label} uses a placeholder MAC address")
+
+            try:
+                measurements = self.fetch_sensor_measurements(
+                    mac_address=mac_address,
+                    campaign_id=campaign_id,
+                )
+            except MeasurementApiRequestError as exc:
+                if skip_missing_sensors and exc.status_code == 404:
+                    skipped_sensors[sensor_label] = (
+                        f"Remote API returned HTTP 404 for campaign_id={campaign_id}"
+                    )
+                    continue
+                raise
+
             if drop_missing_pxx:
                 measurements = [
                     measurement
                     for measurement in measurements
                     if measurement.get("pxx") not in ("", None)
                 ]
+
+            if not measurements:
+                message = "No measurements remained after applying the download filter"
+                if skip_missing_sensors:
+                    skipped_sensors[sensor_label] = message
+                    continue
+                raise MeasurementApiError(
+                    f"{sensor_label} returned no retained measurements for campaign_id={campaign_id}"
+                )
 
             output_path = output_dir / f"{_sanitize_path_component(sensor_label)}.csv"
             save_measurements_csv(
@@ -271,7 +371,14 @@ class MeasurementApiClient:
             )
             saved_paths[sensor_label] = output_path
 
-        return saved_paths
+        return CampaignDownloadResult(
+            campaign_label=campaign_label,
+            campaign_id=campaign_id,
+            output_dir=output_dir,
+            requested_sensor_mac_by_label=resolved_sensor_mac_by_label,
+            saved_csv_paths=saved_paths,
+            skipped_sensors=skipped_sensors,
+        )
 
     def _request_json(
         self,
@@ -289,9 +396,16 @@ class MeasurementApiClient:
             )
             response.raise_for_status()
             payload = response.json()
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            raise MeasurementApiRequestError(
+                f"Request to {url} failed with HTTP {status_code} and params {dict(params)!r}",
+                status_code=status_code,
+            ) from exc
         except requests.RequestException as exc:
-            raise MeasurementApiError(
-                f"Request to {url} failed with params {dict(params)!r}"
+            raise MeasurementApiRequestError(
+                f"Request to {url} failed with params {dict(params)!r}",
+                status_code=None,
             ) from exc
         except ValueError as exc:
             raise MeasurementApiError(
@@ -301,6 +415,83 @@ class MeasurementApiClient:
         if not isinstance(payload, dict):
             raise MeasurementApiError("API payload must be a JSON object")
         return payload
+
+
+def build_campaign_output_dir(
+    campaign_label: str,  # Human-readable campaign name provided by the caller
+    output_root: Path = CAMPAIGNS_DATA_DIR,  # Root under data/campaigns/
+) -> Path:  # Campaign-specific directory path
+    """Build the output directory used for one materialized campaign download."""
+
+    if not campaign_label.strip():
+        raise ValueError("campaign_label must be a non-empty string")
+    return Path(output_root) / _sanitize_path_component(campaign_label)
+
+
+def resolve_sensor_mac_by_label(
+    sensor_labels: Sequence[str] | None = None,  # Optional subset of node labels
+    sensor_mac_by_label: Mapping[str, str] | None = None,  # Optional explicit overrides
+) -> dict[str, str]:  # Validated sensor mapping for one request
+    """Resolve a sensor selection against the repository sensor-network constants.
+
+    Parameters
+    ----------
+    sensor_labels:
+        Optional subset of labels chosen from ``SENSOR_NETWORK_MAC_BY_LABEL``.
+        When omitted, the full sensor network constant is used.
+    sensor_mac_by_label:
+        Optional explicit mapping supplied by the caller. It is mutually
+        exclusive with ``sensor_labels`` and bypasses the repository constants.
+
+    Returns
+    -------
+    dict[str, str]
+        Validated sensor mapping in the iteration order requested by the caller.
+    """
+
+    if sensor_labels is not None and sensor_mac_by_label is not None:
+        raise ValueError(
+            "sensor_labels and sensor_mac_by_label are mutually exclusive"
+        )
+
+    if sensor_mac_by_label is not None:
+        resolved_mapping = dict(sensor_mac_by_label)
+    elif sensor_labels is None:
+        resolved_mapping = dict(SENSOR_NETWORK_MAC_BY_LABEL)
+    else:
+        resolved_mapping = {}
+        seen_labels: set[str] = set()
+        for raw_label in sensor_labels:
+            sensor_label = raw_label.strip()
+            if not sensor_label:
+                raise ValueError("sensor_labels cannot contain empty labels")
+            if sensor_label in seen_labels:
+                raise ValueError(
+                    f"sensor_labels contains the duplicated label {sensor_label!r}"
+                )
+            if sensor_label not in SENSOR_NETWORK_MAC_BY_LABEL:
+                raise KeyError(
+                    f"Unknown sensor label {sensor_label!r}; choose from {tuple(SENSOR_NETWORK_MAC_BY_LABEL)}"
+                )
+            seen_labels.add(sensor_label)
+            resolved_mapping[sensor_label] = SENSOR_NETWORK_MAC_BY_LABEL[sensor_label]
+
+    if not resolved_mapping:
+        raise ValueError("At least one sensor must be resolved for a campaign request")
+
+    # Validate the mapping at the boundary so downstream download logic can
+    # reason about a single well-formed representation.
+    normalized_mapping: dict[str, str] = {}
+    for raw_sensor_label, raw_mac_address in resolved_mapping.items():
+        sensor_label = raw_sensor_label.strip()
+        if not sensor_label:
+            raise ValueError("sensor labels must be non-empty strings")
+        mac_address = raw_mac_address.strip()
+        if not mac_address:
+            raise ValueError(f"{sensor_label} has an empty MAC address")
+        normalized_mapping[sensor_label] = mac_address
+
+    return normalized_mapping
 
 
 def save_measurements_csv(
@@ -444,15 +635,29 @@ def _sanitize_path_component(
     return sanitized
 
 
+def _is_placeholder_mac_address(
+    mac_address: str,  # Candidate MAC address from the sensor network mapping
+) -> bool:  # Whether the address is a placeholder and not routable
+    """Return whether the supplied MAC address is a placeholder value."""
+
+    return mac_address.strip().lower() == PLACEHOLDER_MAC_ADDRESS
+
+
 __all__ = [
-    "DEFAULT_API_BASE_URL",
-    "DEFAULT_CAMPAIGN_IDS",
-    "DEFAULT_DATA_DOWNLOAD_DIR",
-    "DEFAULT_SENSOR_MAC_BY_LABEL",
+    "API_BASE_URL",
+    "CAMPAIGNS_DATA_DIR",
+    "CSV_FIELDNAMES",
+    "CampaignDownloadResult",
     "MeasurementApiClient",
     "MeasurementApiConfig",
     "MeasurementApiError",
+    "MeasurementApiRequestError",
+    "NUMERIC_COLUMNS",
+    "PLACEHOLDER_MAC_ADDRESS",
+    "SENSOR_NETWORK_MAC_BY_LABEL",
+    "build_campaign_output_dir",
     "load_measurement_dataframe",
     "load_measurement_frames",
+    "resolve_sensor_mac_by_label",
     "save_measurements_csv",
 ]
