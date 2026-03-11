@@ -1,3 +1,0 @@
-sensor_id,median_total_gain_db,median_correction_gain_db,max_abs_correction_gain_db,median_additive_noise_db,median_residual_std_db,low_information_fraction,gain_cap_fraction,noise_zero_fraction
-Node3,2.6759555824526084,2.6759555824526084,7.202400954180299,-66.09186968470146,-70.0,0.88671875,0.0,0.0
-Node4,-2.6759555824527124,-2.6759555824527124,7.202400954180165,-71.28466164347785,-70.0,0.923828125,0.0,0.0

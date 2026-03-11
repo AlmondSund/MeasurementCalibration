@@ -1,9 +1,17 @@
-"""Correlation-based sensor ranking helpers for RBW acquisition notebooks.
+"""Correlation-based sensor ranking helpers for RBW and campaign datasets.
 
-The exploratory notebooks under ``check_out/`` rank sensors by how consistently
-their PSD shapes agree with the rest of the network after a simple noise-floor
-recentering step. This module extracts that workflow into pure, testable
-functions so the notebook can stay focused on orchestration and visualization.
+The original exploratory notebooks focused on RBW-specific directory trees
+where each subdirectory already contained row-aligned sensor CSV files. The
+current module keeps those helpers intact, but it also provides a more general
+campaign-analysis framework for datasets stored under ``data/campaigns/``:
+
+- infrastructure/repository code loads per-sensor CSV files from disk,
+- orchestration code aligns campaign rows by timestamp when necessary, and
+- domain code computes the distribution and record-wise ranking diagnostics.
+
+The ranking mathematics remain pure and deterministic. Filesystem access lives
+in explicit loader and repository boundaries so the core ranking logic remains
+easy to test and reason about.
 """
 
 from __future__ import annotations
@@ -14,6 +22,7 @@ import csv
 import json
 import sys
 from pathlib import Path
+from typing import Protocol
 
 import numpy as np
 from numpy.typing import NDArray
@@ -23,16 +32,62 @@ FloatArray = NDArray[np.float64]
 IndexArray = NDArray[np.int64]
 
 _STD_EPSILON = 1.0e-8
+DEFAULT_CAMPAIGNS_DATA_DIR = Path("data") / "campaigns"
+_DEFAULT_CAMPAIGN_SENSOR_FILE_PATTERN = "*.csv"
+_MIN_ALIGNMENT_TOLERANCE_MS = 250
+_MAX_ALIGNMENT_TOLERANCE_MS = 5_000
+_ALIGNMENT_TOLERANCE_PERIOD_FRACTION = 0.25
+
+
+@dataclass(frozen=True)
+class SensorMeasurementSeries:
+    """Raw measurement rows for one sensor before campaign alignment.
+
+    Parameters
+    ----------
+    sensor_id:
+        Sensor identifier derived from the CSV stem or the caller's mapping.
+    frequency_hz:
+        Shared PSD frequency grid for every record in this file [Hz].
+    observations_db:
+        PSD values in dB with shape ``(n_records, n_frequencies)``.
+    timestamps_ms:
+        Record timestamps with shape ``(n_records,)`` [ms].
+    source_row_indices:
+        Original row positions retained from the CSV file. This is useful when
+        a caller sorts or aligns rows and still wants to trace each aligned
+        record back to the source file.
+    """
+
+    sensor_id: str
+    frequency_hz: FloatArray
+    observations_db: FloatArray
+    timestamps_ms: IndexArray
+    source_row_indices: IndexArray
+
+    @property
+    def n_records(self) -> int:
+        """Return the number of records available for this sensor."""
+
+        return int(self.observations_db.shape[0])
+
+    @property
+    def n_frequencies(self) -> int:
+        """Return the number of frequency bins per PSD record."""
+
+        return int(self.observations_db.shape[1])
 
 
 @dataclass(frozen=True)
 class RbwAcquisitionDataset:
-    """Row-aligned acquisition subset for one RBW campaign.
+    """Row-aligned acquisition subset for one dataset label.
 
     Parameters
     ----------
     rbw_label:
-        Directory name that identifies the RBW subset, for example ``"10K"``.
+        Legacy label name kept for backward compatibility. The same field is
+        also used as the generic dataset label for campaign analysis, for
+        example ``"10K"`` or ``"test-calibration"``.
     sensor_ids:
         Ordered sensor identifiers derived from the CSV file names.
     frequency_hz:
@@ -67,15 +122,21 @@ class RbwAcquisitionDataset:
 
         return int(self.observations_db.shape[2])
 
+    @property
+    def dataset_label(self) -> str:
+        """Return the generic dataset label used by campaign analysis."""
+
+        return self.rbw_label
+
 
 @dataclass(frozen=True)
 class SensorRankingResult:
-    """Correlation-based ranking output for one RBW subset.
+    """Correlation-based ranking output for one aligned dataset.
 
     Parameters
     ----------
     rbw_label:
-        Directory name that identifies the processed RBW subset.
+        Legacy label name kept for backward compatibility with the RBW path.
     sensor_ids:
         Ordered sensor identifiers matching the score arrays.
     per_record_score:
@@ -111,15 +172,21 @@ class SensorRankingResult:
     per_record_correlation: FloatArray
     ranking_sensor_ids: tuple[str, ...]
 
+    @property
+    def dataset_label(self) -> str:
+        """Return the generic dataset label used by campaign analysis."""
+
+        return self.rbw_label
+
 
 @dataclass(frozen=True)
 class SensorDistributionDiagnostics:
-    """Dataset-wide PSD distribution diagnostics for one RBW subset.
+    """Dataset-wide PSD distribution diagnostics for one aligned dataset.
 
     Parameters
     ----------
     rbw_label:
-        Directory name that identifies the processed RBW subset.
+        Legacy label name kept for backward compatibility with the RBW path.
     sensor_ids:
         Ordered sensor identifiers matching the density and score arrays.
     bin_edges_db:
@@ -171,15 +238,261 @@ class SensorDistributionDiagnostics:
     clipped_fraction: float
     ranking_sensor_ids: tuple[str, ...]
 
+    @property
+    def dataset_label(self) -> str:
+        """Return the generic dataset label used by campaign analysis."""
+
+        return self.rbw_label
+
 
 @dataclass(frozen=True)
-class _LoadedSensorCsv:
-    """Internal parsed representation of one acquisition CSV."""
+class CampaignAlignmentDiagnostics:
+    """Timestamp-alignment diagnostics for one campaign dataset.
 
-    sensor_id: str
-    frequency_hz: FloatArray
-    observations_db: FloatArray
-    timestamps_ms: IndexArray
+    Parameters
+    ----------
+    campaign_label:
+        Campaign label resolved from ``data/campaigns/<campaign_label>``.
+    sensor_ids:
+        Ordered sensor identifiers that survived campaign loading.
+    anchor_sensor_id:
+        Sensor used as the alignment anchor. The implementation chooses the
+        shortest sensor series so the alignment only keeps record groups that
+        are observable across the full retained network.
+    alignment_tolerance_ms:
+        Maximum timestamp mismatch allowed when matching one record group [ms].
+    source_record_count:
+        Number of raw CSV rows available per sensor before alignment.
+    dropped_record_count:
+        Number of rows discarded per sensor because they could not be matched
+        across the full sensor set while respecting the tolerance.
+    aligned_row_indices:
+        Source row positions retained for each sensor after sorting and
+        alignment. The tuple order follows ``sensor_ids``.
+    record_time_spread_ms:
+        Timestamp spread across sensors for each aligned record group [ms].
+    """
+
+    campaign_label: str
+    sensor_ids: tuple[str, ...]
+    anchor_sensor_id: str
+    alignment_tolerance_ms: int
+    source_record_count: IndexArray
+    dropped_record_count: IndexArray
+    aligned_row_indices: tuple[IndexArray, ...]
+    record_time_spread_ms: FloatArray
+
+    @property
+    def aligned_record_count(self) -> int:
+        """Return the number of aligned campaign records retained."""
+
+        if not self.aligned_row_indices:
+            return 0
+        return int(self.aligned_row_indices[0].size)
+
+    @property
+    def mean_record_time_spread_ms(self) -> float:
+        """Return the mean cross-sensor timestamp spread of aligned records."""
+
+        if self.record_time_spread_ms.size == 0:
+            return 0.0
+        return float(np.mean(self.record_time_spread_ms))
+
+    @property
+    def max_record_time_spread_ms(self) -> float:
+        """Return the maximum cross-sensor timestamp spread of aligned records."""
+
+        if self.record_time_spread_ms.size == 0:
+            return 0.0
+        return float(np.max(self.record_time_spread_ms))
+
+
+@dataclass(frozen=True)
+class SensorRankingAnalysisConfig:
+    """Configuration for campaign-oriented sensor ranking analysis.
+
+    Parameters
+    ----------
+    ranking_histogram_bins:
+        Histogram bins used by the record-wise ranking noise-floor estimate.
+    distribution_histogram_bins:
+        Histogram bins used by the dataset-wide PSD distribution diagnostic.
+    campaign_sensor_file_pattern:
+        Glob pattern used to discover sensor CSV files inside one campaign
+        directory.
+    alignment_tolerance_ms:
+        Optional explicit timestamp tolerance used when aligning campaign rows.
+        When omitted, the analyzer infers a conservative tolerance from the
+        median campaign sampling period.
+    """
+
+    ranking_histogram_bins: int = 50
+    distribution_histogram_bins: int = 300
+    campaign_sensor_file_pattern: str = _DEFAULT_CAMPAIGN_SENSOR_FILE_PATTERN
+    alignment_tolerance_ms: int | None = None
+
+    def __post_init__(self) -> None:
+        """Validate the campaign-analysis configuration at construction time."""
+
+        if self.ranking_histogram_bins < 1:
+            raise ValueError("ranking_histogram_bins must be at least 1")
+        if self.distribution_histogram_bins < 1:
+            raise ValueError("distribution_histogram_bins must be at least 1")
+        if not self.campaign_sensor_file_pattern.strip():
+            raise ValueError("campaign_sensor_file_pattern must be non-empty")
+        if self.alignment_tolerance_ms is not None and self.alignment_tolerance_ms < 0:
+            raise ValueError("alignment_tolerance_ms cannot be negative")
+
+
+@dataclass(frozen=True)
+class CampaignSensorRankingAnalysis:
+    """End-to-end ranking analysis for one dataset under ``data/campaigns/``.
+
+    Parameters
+    ----------
+    campaign_label:
+        Campaign label supplied by the caller.
+    dataset:
+        Timestamp-aligned dataset passed into the ranking core.
+    ranking_result:
+        Record-wise cumulative-correlation ranking output.
+    distribution_diagnostics:
+        Dataset-wide PSD distribution diagnostic for the same aligned dataset.
+    alignment_diagnostics:
+        Summary of how raw campaign rows were aligned before ranking.
+    """
+
+    campaign_label: str
+    dataset: RbwAcquisitionDataset
+    ranking_result: SensorRankingResult
+    distribution_diagnostics: SensorDistributionDiagnostics
+    alignment_diagnostics: CampaignAlignmentDiagnostics
+
+
+class CampaignSensorDataRepository(Protocol):
+    """Boundary that supplies per-sensor campaign series to the analyzer."""
+
+    def list_campaign_labels(self) -> tuple[str, ...]:
+        """Return available campaign labels that contain at least one CSV."""
+
+    def load_campaign_sensor_series(
+        self,
+        campaign_label: str,  # Campaign label stored under data/campaigns/
+    ) -> dict[str, SensorMeasurementSeries]:
+        """Load one campaign into raw per-sensor measurement series."""
+
+
+@dataclass(frozen=True)
+class FileSystemCampaignSensorDataRepository:
+    """Filesystem-backed repository for ``data/campaigns/<campaign_label>``.
+
+    Parameters
+    ----------
+    campaigns_root:
+        Root directory that contains one subdirectory per campaign label.
+    sensor_file_pattern:
+        Glob pattern used to discover sensor CSV files inside each campaign
+        directory. The default accepts any CSV so the repository adapts to
+        campaigns that do not use the historical ``Node*.csv`` naming.
+    """
+
+    campaigns_root: Path = DEFAULT_CAMPAIGNS_DATA_DIR
+    sensor_file_pattern: str = _DEFAULT_CAMPAIGN_SENSOR_FILE_PATTERN
+
+    def list_campaign_labels(self) -> tuple[str, ...]:
+        """Return campaign labels that contain at least one matching CSV file."""
+
+        root_dir = Path(self.campaigns_root)
+        if not root_dir.exists():
+            raise FileNotFoundError(f"Campaign data root does not exist: {root_dir}")
+
+        labels = [
+            campaign_dir.name
+            for campaign_dir in sorted(
+                path for path in root_dir.iterdir() if path.is_dir()
+            )
+            if any(
+                path.is_file() for path in campaign_dir.glob(self.sensor_file_pattern)
+            )
+        ]
+        return tuple(labels)
+
+    def load_campaign_sensor_series(
+        self,
+        campaign_label: str,  # Campaign label stored under data/campaigns/
+    ) -> dict[str, SensorMeasurementSeries]:
+        """Load one campaign directory into raw, timestamp-sorted sensor series."""
+
+        campaign_dir = Path(self.campaigns_root) / str(campaign_label)
+        if not campaign_dir.exists():
+            raise FileNotFoundError(
+                f"Campaign directory does not exist: {campaign_dir}"
+            )
+        return _load_sensor_series_directory(
+            campaign_dir,
+            sensor_file_pattern=self.sensor_file_pattern,
+            sort_by_timestamp=True,
+        )
+
+
+@dataclass(frozen=True)
+class SensorRankingAnalyzer:
+    """Service layer that runs dynamic campaign ranking analysis.
+
+    The analyzer owns the application workflow:
+
+    1. load raw per-sensor campaign series from the repository,
+    2. align rows by timestamp to satisfy the ranking core invariants, and
+    3. compute both the record-wise and distribution-wide diagnostics.
+    """
+
+    repository: CampaignSensorDataRepository
+    config: SensorRankingAnalysisConfig = SensorRankingAnalysisConfig()
+
+    def analyze_campaign(
+        self,
+        campaign_label: str,  # Label under data/campaigns/
+    ) -> CampaignSensorRankingAnalysis:
+        """Analyze one campaign label end to end.
+
+        Side Effects
+        ------------
+        Filesystem reads occur through the injected repository. No writes occur.
+        """
+
+        sensor_series = self.repository.load_campaign_sensor_series(campaign_label)
+        dataset, alignment_diagnostics = align_campaign_sensor_series(
+            campaign_label=campaign_label,
+            sensor_series_by_id=sensor_series,
+            alignment_tolerance_ms=self.config.alignment_tolerance_ms,
+        )
+        ranking_result = rank_sensors_by_cumulative_correlation(
+            dataset,
+            histogram_bins=self.config.ranking_histogram_bins,
+        )
+        distribution_diagnostics = summarize_psd_distribution(
+            dataset,
+            histogram_bins=self.config.distribution_histogram_bins,
+        )
+        return CampaignSensorRankingAnalysis(
+            campaign_label=str(campaign_label),
+            dataset=dataset,
+            ranking_result=ranking_result,
+            distribution_diagnostics=distribution_diagnostics,
+            alignment_diagnostics=alignment_diagnostics,
+        )
+
+    def analyze_all_campaigns(
+        self,
+    ) -> dict[str, CampaignSensorRankingAnalysis]:
+        """Analyze every campaign label exposed by the repository."""
+
+        analyses: dict[str, CampaignSensorRankingAnalysis] = {}
+        for campaign_label in self.repository.list_campaign_labels():
+            analyses[campaign_label] = self.analyze_campaign(campaign_label)
+        if not analyses:
+            raise ValueError("No campaign datasets were found for sensor ranking")
+        return analyses
 
 
 def load_rbw_acquisition_datasets(
@@ -199,52 +512,232 @@ def load_rbw_acquisition_datasets(
 
     datasets: dict[str, RbwAcquisitionDataset] = {}
     for rbw_dir in sorted(path for path in root_dir.iterdir() if path.is_dir()):
-        sensor_files = sorted(rbw_dir.glob("Node*.csv"))
-        if not sensor_files:
+        try:
+            sensor_series = _load_sensor_series_directory(
+                rbw_dir,
+                sensor_file_pattern="Node*.csv",
+                sort_by_timestamp=False,
+            )
+        except ValueError:
             continue
-
-        loaded_sensors = [_load_sensor_csv(path) for path in sensor_files]
-        reference_frequency_hz = loaded_sensors[0].frequency_hz
-        reference_record_count = loaded_sensors[0].observations_db.shape[0]
-
-        # The ranking assumes that record index ``k`` refers to the same
-        # campaign slice for every sensor in the RBW subset.
-        for loaded_sensor in loaded_sensors[1:]:
-            if loaded_sensor.observations_db.shape[0] != reference_record_count:
-                raise ValueError(
-                    "All sensors inside one RBW subset must have the same "
-                    f"number of records; {loaded_sensors[0].sensor_id} has "
-                    f"{reference_record_count} but {loaded_sensor.sensor_id} has "
-                    f"{loaded_sensor.observations_db.shape[0]}"
-                )
-            if not np.allclose(
-                loaded_sensor.frequency_hz,
-                reference_frequency_hz,
-                rtol=0.0,
-                atol=0.0,
-            ):
-                raise ValueError(
-                    "All sensors inside one RBW subset must share the same "
-                    f"frequency grid; {loaded_sensor.sensor_id} differs in {rbw_dir}"
-                )
-
-        datasets[rbw_dir.name] = RbwAcquisitionDataset(
-            rbw_label=rbw_dir.name,
-            sensor_ids=tuple(sensor.sensor_id for sensor in loaded_sensors),
-            frequency_hz=np.asarray(reference_frequency_hz, dtype=np.float64),
-            observations_db=np.stack(
-                [sensor.observations_db for sensor in loaded_sensors],
-                axis=0,
-            ),
-            timestamps_ms=np.stack(
-                [sensor.timestamps_ms for sensor in loaded_sensors],
-                axis=0,
-            ),
+        datasets[rbw_dir.name] = _stack_aligned_sensor_series(
+            dataset_label=rbw_dir.name,
+            sensor_series_by_id=sensor_series,
         )
 
     if not datasets:
         raise ValueError(f"No RBW acquisition CSV files were found under {root_dir}")
     return datasets
+
+
+def analyze_campaign_sensor_ranking(
+    campaign_label: str,  # Dataset label under data/campaigns/
+    campaigns_root: Path = DEFAULT_CAMPAIGNS_DATA_DIR,  # Root containing campaign dirs
+    config: SensorRankingAnalysisConfig | None = None,
+) -> CampaignSensorRankingAnalysis:
+    """Analyze one stored campaign under ``data/campaigns/<campaign_label>``.
+
+    This is the convenience entry point for callers that only need one
+    campaign analysis and do not want to instantiate the repository and
+    analyzer classes explicitly.
+    """
+
+    resolved_config = SensorRankingAnalysisConfig() if config is None else config
+    repository = FileSystemCampaignSensorDataRepository(
+        campaigns_root=campaigns_root,
+        sensor_file_pattern=resolved_config.campaign_sensor_file_pattern,
+    )
+    analyzer = SensorRankingAnalyzer(repository=repository, config=resolved_config)
+    return analyzer.analyze_campaign(campaign_label)
+
+
+def analyze_all_campaign_sensor_rankings(
+    campaigns_root: Path = DEFAULT_CAMPAIGNS_DATA_DIR,  # Root containing campaign dirs
+    config: SensorRankingAnalysisConfig | None = None,
+) -> dict[str, CampaignSensorRankingAnalysis]:
+    """Analyze every campaign dataset stored under ``data/campaigns/``."""
+
+    resolved_config = SensorRankingAnalysisConfig() if config is None else config
+    repository = FileSystemCampaignSensorDataRepository(
+        campaigns_root=campaigns_root,
+        sensor_file_pattern=resolved_config.campaign_sensor_file_pattern,
+    )
+    analyzer = SensorRankingAnalyzer(repository=repository, config=resolved_config)
+    return analyzer.analyze_all_campaigns()
+
+
+def build_campaign_alignment_rows(
+    diagnostics: CampaignAlignmentDiagnostics,  # Alignment summary for one campaign
+) -> list[dict[str, float | int | str | bool]]:
+    """Build a table-friendly summary of campaign timestamp alignment."""
+
+    rows: list[dict[str, float | int | str | bool]] = []
+    aligned_record_count = diagnostics.aligned_record_count
+    for sensor_index, sensor_id in enumerate(diagnostics.sensor_ids):
+        source_record_count = int(diagnostics.source_record_count[sensor_index])
+        dropped_record_count = int(diagnostics.dropped_record_count[sensor_index])
+        rows.append(
+            {
+                "campaign_label": diagnostics.campaign_label,
+                "sensor_id": sensor_id,
+                "is_anchor_sensor": sensor_id == diagnostics.anchor_sensor_id,
+                "source_records": source_record_count,
+                "aligned_records": aligned_record_count,
+                "dropped_records": dropped_record_count,
+                "retained_fraction": (
+                    float(aligned_record_count / source_record_count)
+                    if source_record_count > 0
+                    else 0.0
+                ),
+                "alignment_tolerance_ms": diagnostics.alignment_tolerance_ms,
+                "mean_record_time_spread_ms": diagnostics.mean_record_time_spread_ms,
+                "max_record_time_spread_ms": diagnostics.max_record_time_spread_ms,
+            }
+        )
+    return rows
+
+
+def align_campaign_sensor_series(
+    campaign_label: str,  # Campaign label resolved by the caller
+    sensor_series_by_id: Mapping[str, SensorMeasurementSeries],  # Raw per-sensor rows
+    alignment_tolerance_ms: int | None = None,
+) -> tuple[RbwAcquisitionDataset, CampaignAlignmentDiagnostics]:
+    """Align a campaign's raw sensor rows by timestamp.
+
+    The ranking core requires one row-aligned PSD tensor. Campaign downloads do
+    not guarantee that every sensor has the same number of rows, so this
+    adapter keeps only record groups that can be matched across the full sensor
+    set within a configurable timestamp tolerance.
+    """
+
+    if len(sensor_series_by_id) < 2:
+        raise ValueError("Campaign ranking requires at least two sensors")
+
+    sorted_series_by_id = {
+        sensor_id: _sort_sensor_series_by_timestamp(series)
+        for sensor_id, series in sensor_series_by_id.items()
+    }
+    sensor_ids = tuple(sorted(sorted_series_by_id))
+    reference_frequency_hz = _validate_shared_frequency_grid(
+        sorted_series_by_id,
+        context_label=str(campaign_label),
+    )
+    resolved_tolerance_ms = _infer_alignment_tolerance_ms(
+        sorted_series_by_id=sensor_series_by_id,
+        alignment_tolerance_ms=alignment_tolerance_ms,
+    )
+
+    # Use the shortest sensor as the anchor so every retained group is
+    # observable across the full campaign sensor set.
+    anchor_sensor_id = min(
+        sensor_ids,
+        key=lambda sensor_id: (
+            sorted_series_by_id[sensor_id].n_records,
+            sensor_id,
+        ),
+    )
+    anchor_series = sorted_series_by_id[anchor_sensor_id]
+    next_start_by_sensor = {sensor_id: 0 for sensor_id in sensor_ids}
+    aligned_row_indices_by_sensor: dict[str, list[int]] = {
+        sensor_id: [] for sensor_id in sensor_ids
+    }
+    aligned_timestamps_by_sensor: dict[str, list[int]] = {
+        sensor_id: [] for sensor_id in sensor_ids
+    }
+    aligned_observations_by_sensor: dict[str, list[FloatArray]] = {
+        sensor_id: [] for sensor_id in sensor_ids
+    }
+
+    # Greedy matching preserves time order and drops unmatched rows instead of
+    # silently fabricating pairings across distant timestamps.
+    for anchor_position, anchor_timestamp_ms in enumerate(anchor_series.timestamps_ms):
+        candidate_positions = {anchor_sensor_id: anchor_position}
+        is_match = True
+
+        for sensor_id in sensor_ids:
+            if sensor_id == anchor_sensor_id:
+                continue
+
+            sensor_series = sorted_series_by_id[sensor_id]
+            candidate_position = _find_nearest_timestamp_index(
+                sorted_timestamps_ms=sensor_series.timestamps_ms,
+                target_timestamp_ms=int(anchor_timestamp_ms),
+                start_index=next_start_by_sensor[sensor_id],
+                alignment_tolerance_ms=resolved_tolerance_ms,
+            )
+            if candidate_position is None:
+                is_match = False
+                break
+
+            candidate_positions[sensor_id] = candidate_position
+
+        if not is_match:
+            continue
+
+        for sensor_id in sensor_ids:
+            sensor_series = sorted_series_by_id[sensor_id]
+            candidate_position = candidate_positions[sensor_id]
+            next_start_by_sensor[sensor_id] = candidate_position + 1
+            aligned_row_indices_by_sensor[sensor_id].append(
+                int(sensor_series.source_row_indices[candidate_position])
+            )
+            aligned_timestamps_by_sensor[sensor_id].append(
+                int(sensor_series.timestamps_ms[candidate_position])
+            )
+            aligned_observations_by_sensor[sensor_id].append(
+                np.asarray(
+                    sensor_series.observations_db[candidate_position], dtype=np.float64
+                )
+            )
+
+    if not aligned_row_indices_by_sensor[anchor_sensor_id]:
+        raise ValueError(
+            "Campaign alignment could not find any record groups shared across "
+            f"all sensors in {campaign_label!r}"
+        )
+
+    observations_db = np.stack(
+        [
+            np.stack(aligned_observations_by_sensor[sensor_id], axis=0)
+            for sensor_id in sensor_ids
+        ],
+        axis=0,
+    )
+    timestamps_ms = np.asarray(
+        [aligned_timestamps_by_sensor[sensor_id] for sensor_id in sensor_ids],
+        dtype=np.int64,
+    )
+    aligned_row_indices = tuple(
+        np.asarray(aligned_row_indices_by_sensor[sensor_id], dtype=np.int64)
+        for sensor_id in sensor_ids
+    )
+    source_record_count = np.asarray(
+        [sorted_series_by_id[sensor_id].n_records for sensor_id in sensor_ids],
+        dtype=np.int64,
+    )
+    dropped_record_count = source_record_count - int(aligned_row_indices[0].size)
+    record_time_spread_ms = (
+        np.max(timestamps_ms, axis=0) - np.min(timestamps_ms, axis=0)
+    ).astype(np.float64)
+
+    dataset = RbwAcquisitionDataset(
+        rbw_label=str(campaign_label),
+        sensor_ids=sensor_ids,
+        frequency_hz=np.asarray(reference_frequency_hz, dtype=np.float64),
+        observations_db=np.asarray(observations_db, dtype=np.float64),
+        timestamps_ms=np.asarray(timestamps_ms, dtype=np.int64),
+    )
+    diagnostics = CampaignAlignmentDiagnostics(
+        campaign_label=str(campaign_label),
+        sensor_ids=sensor_ids,
+        anchor_sensor_id=anchor_sensor_id,
+        alignment_tolerance_ms=int(resolved_tolerance_ms),
+        source_record_count=source_record_count,
+        dropped_record_count=np.asarray(dropped_record_count, dtype=np.int64),
+        aligned_row_indices=aligned_row_indices,
+        record_time_spread_ms=np.asarray(record_time_spread_ms, dtype=np.float64),
+    )
+    return dataset, diagnostics
 
 
 def build_dataset_summary_rows(
@@ -418,7 +911,23 @@ def summarize_psd_distribution(
         value_count[sensor_index] = int(values_db.size)
 
     global_density = global_counts / float(np.sum(global_counts) * bin_width_db)
-    correlation_matrix = np.corrcoef(per_sensor_density)
+
+    # Small campaigns can produce nearly constant density curves. Standardizing
+    # with an explicit epsilon avoids NaN correlations from zero-variance rows.
+    centered_density = per_sensor_density - np.mean(
+        per_sensor_density,
+        axis=1,
+        keepdims=True,
+    )
+    density_scale = np.std(centered_density, axis=1, keepdims=True)
+    standardized_density = centered_density / np.clip(
+        density_scale,
+        _STD_EPSILON,
+        None,
+    )
+    correlation_matrix = (
+        standardized_density @ standardized_density.T / float(histogram_bins)
+    )
     correlation_matrix = np.clip(correlation_matrix, -1.0, 1.0)
     np.fill_diagonal(correlation_matrix, 1.0)
 
@@ -718,10 +1227,201 @@ def build_rbw_overview_rows(
     return rows
 
 
+def _load_sensor_series_directory(
+    dataset_dir: Path,  # Directory with one CSV file per sensor
+    sensor_file_pattern: str,  # Glob used to discover sensor files
+    sort_by_timestamp: bool,
+) -> dict[str, SensorMeasurementSeries]:
+    """Load every sensor CSV from one directory into parsed series objects."""
+
+    sensor_files = sorted(
+        path for path in Path(dataset_dir).glob(sensor_file_pattern) if path.is_file()
+    )
+    if not sensor_files:
+        raise ValueError(
+            f"No sensor CSV files matching {sensor_file_pattern!r} were found in "
+            f"{dataset_dir}"
+        )
+
+    sensor_series_by_id: dict[str, SensorMeasurementSeries] = {}
+    for path in sensor_files:
+        sensor_series = _load_sensor_csv(path, sort_by_timestamp=sort_by_timestamp)
+        if sensor_series.sensor_id in sensor_series_by_id:
+            raise ValueError(
+                f"Duplicate sensor label {sensor_series.sensor_id!r} in {dataset_dir}"
+            )
+        sensor_series_by_id[sensor_series.sensor_id] = sensor_series
+    return sensor_series_by_id
+
+
+def _stack_aligned_sensor_series(
+    dataset_label: str,  # Output label used in the aligned dataset
+    sensor_series_by_id: Mapping[
+        str, SensorMeasurementSeries
+    ],  # Parsed per-sensor rows
+) -> RbwAcquisitionDataset:
+    """Stack already aligned sensor series into the ranking dataset tensor."""
+
+    if len(sensor_series_by_id) < 2:
+        raise ValueError("At least two sensors are required to build a dataset")
+
+    sensor_ids = tuple(sorted(sensor_series_by_id))
+    reference_frequency_hz = _validate_shared_frequency_grid(
+        sensor_series_by_id,
+        context_label=str(dataset_label),
+    )
+    reference_record_count = sensor_series_by_id[sensor_ids[0]].n_records
+
+    # The RBW workflow assumes row ``k`` refers to the same capture across all
+    # sensors, so record counts must agree exactly at this boundary.
+    for sensor_id in sensor_ids[1:]:
+        sensor_series = sensor_series_by_id[sensor_id]
+        if sensor_series.n_records != reference_record_count:
+            raise ValueError(
+                "All sensors inside one aligned dataset must have the same "
+                f"number of records; {sensor_ids[0]} has {reference_record_count} "
+                f"but {sensor_id} has {sensor_series.n_records}"
+            )
+
+    return RbwAcquisitionDataset(
+        rbw_label=str(dataset_label),
+        sensor_ids=sensor_ids,
+        frequency_hz=np.asarray(reference_frequency_hz, dtype=np.float64),
+        observations_db=np.stack(
+            [
+                sensor_series_by_id[sensor_id].observations_db
+                for sensor_id in sensor_ids
+            ],
+            axis=0,
+        ),
+        timestamps_ms=np.stack(
+            [sensor_series_by_id[sensor_id].timestamps_ms for sensor_id in sensor_ids],
+            axis=0,
+        ),
+    )
+
+
+def _validate_shared_frequency_grid(
+    sensor_series_by_id: Mapping[str, SensorMeasurementSeries],
+    context_label: str,
+) -> FloatArray:
+    """Validate that every sensor shares the same PSD frequency grid."""
+
+    sensor_ids = tuple(sorted(sensor_series_by_id))
+    reference_frequency_hz = sensor_series_by_id[sensor_ids[0]].frequency_hz
+    for sensor_id in sensor_ids[1:]:
+        sensor_frequency_hz = sensor_series_by_id[sensor_id].frequency_hz
+        if not np.allclose(
+            sensor_frequency_hz,
+            reference_frequency_hz,
+            rtol=0.0,
+            atol=0.0,
+        ):
+            raise ValueError(
+                "All sensors inside one dataset must share the same frequency "
+                f"grid; {sensor_id} differs in {context_label}"
+            )
+    return np.asarray(reference_frequency_hz, dtype=np.float64)
+
+
+def _sort_sensor_series_by_timestamp(
+    sensor_series: SensorMeasurementSeries,
+) -> SensorMeasurementSeries:
+    """Return a copy of the sensor series sorted by timestamp."""
+
+    if sensor_series.n_records <= 1:
+        return sensor_series
+
+    sorted_order = np.argsort(sensor_series.timestamps_ms, kind="stable")
+    return SensorMeasurementSeries(
+        sensor_id=sensor_series.sensor_id,
+        frequency_hz=np.asarray(sensor_series.frequency_hz, dtype=np.float64),
+        observations_db=np.asarray(
+            sensor_series.observations_db[sorted_order],
+            dtype=np.float64,
+        ),
+        timestamps_ms=np.asarray(
+            sensor_series.timestamps_ms[sorted_order], dtype=np.int64
+        ),
+        source_row_indices=np.asarray(
+            sensor_series.source_row_indices[sorted_order],
+            dtype=np.int64,
+        ),
+    )
+
+
+def _infer_alignment_tolerance_ms(
+    sorted_series_by_id: Mapping[str, SensorMeasurementSeries],  # Raw or sorted series
+    alignment_tolerance_ms: int | None,
+) -> int:
+    """Infer a conservative timestamp-alignment tolerance for one campaign."""
+
+    if alignment_tolerance_ms is not None:
+        return int(alignment_tolerance_ms)
+
+    positive_deltas_ms: list[float] = []
+    for sensor_series in sorted_series_by_id.values():
+        if sensor_series.n_records < 2:
+            continue
+        deltas_ms = np.diff(np.sort(sensor_series.timestamps_ms.astype(np.float64)))
+        positive_deltas_ms.extend(float(delta) for delta in deltas_ms if delta > 0.0)
+
+    if not positive_deltas_ms:
+        return _MAX_ALIGNMENT_TOLERANCE_MS
+
+    median_period_ms = float(
+        np.median(np.asarray(positive_deltas_ms, dtype=np.float64))
+    )
+    inferred_tolerance_ms = median_period_ms * _ALIGNMENT_TOLERANCE_PERIOD_FRACTION
+    clipped_tolerance_ms = min(
+        max(inferred_tolerance_ms, float(_MIN_ALIGNMENT_TOLERANCE_MS)),
+        float(_MAX_ALIGNMENT_TOLERANCE_MS),
+    )
+    return int(round(clipped_tolerance_ms))
+
+
+def _find_nearest_timestamp_index(
+    sorted_timestamps_ms: IndexArray,  # Timestamp-sorted series for one sensor
+    target_timestamp_ms: int,  # Anchor timestamp used for matching
+    start_index: int,  # First index still available for monotone matching
+    alignment_tolerance_ms: int,  # Maximum allowed absolute mismatch [ms]
+) -> int | None:
+    """Return the nearest admissible timestamp index or ``None`` if none fits."""
+
+    if start_index >= int(sorted_timestamps_ms.size):
+        return None
+
+    candidate_slice = sorted_timestamps_ms[start_index:]
+    insertion_index = int(
+        np.searchsorted(candidate_slice, target_timestamp_ms, side="left")
+    )
+    candidate_indices: list[int] = []
+    for relative_index in (insertion_index - 1, insertion_index):
+        if 0 <= relative_index < int(candidate_slice.size):
+            candidate_indices.append(start_index + relative_index)
+    if not candidate_indices:
+        return None
+
+    best_index = min(
+        candidate_indices,
+        key=lambda candidate_index: (
+            abs(int(sorted_timestamps_ms[candidate_index]) - int(target_timestamp_ms)),
+            candidate_index,
+        ),
+    )
+    if (
+        abs(int(sorted_timestamps_ms[best_index]) - int(target_timestamp_ms))
+        > alignment_tolerance_ms
+    ):
+        return None
+    return best_index
+
+
 def _load_sensor_csv(
     path: Path,  # Acquisition CSV path
-) -> _LoadedSensorCsv:  # Parsed observations for one sensor file
-    """Load one RBW acquisition CSV into a numeric tensor.
+    sort_by_timestamp: bool = False,
+) -> SensorMeasurementSeries:  # Parsed observations for one sensor file
+    """Load one acquisition CSV into a numeric sensor series.
 
     Every row must provide a JSON-encoded ``pxx`` vector, ``start_freq_hz``,
     ``end_freq_hz``, and ``timestamp``. All rows inside the file are required to
@@ -776,18 +1476,34 @@ def _load_sensor_csv(
             timestamps_ms.append(timestamp_ms)
 
     if reference_frequency_hz is None:
-        raise ValueError(f"RBW acquisition CSV does not contain any rows: {path}")
+        raise ValueError(f"Acquisition CSV does not contain any rows: {path}")
 
-    return _LoadedSensorCsv(
+    sensor_series = SensorMeasurementSeries(
         sensor_id=path.stem,
         frequency_hz=np.asarray(reference_frequency_hz, dtype=np.float64),
         observations_db=np.stack(observations_db, axis=0),
         timestamps_ms=np.asarray(timestamps_ms, dtype=np.int64),
+        source_row_indices=np.arange(len(observations_db), dtype=np.int64),
     )
+    if sort_by_timestamp:
+        return _sort_sensor_series_by_timestamp(sensor_series)
+    return sensor_series
 
 
 __all__ = [
+    "CampaignAlignmentDiagnostics",
+    "CampaignSensorDataRepository",
+    "CampaignSensorRankingAnalysis",
+    "DEFAULT_CAMPAIGNS_DATA_DIR",
+    "FileSystemCampaignSensorDataRepository",
     "RbwAcquisitionDataset",
+    "SensorMeasurementSeries",
+    "SensorRankingAnalysisConfig",
+    "SensorRankingAnalyzer",
+    "align_campaign_sensor_series",
+    "analyze_all_campaign_sensor_rankings",
+    "analyze_campaign_sensor_ranking",
+    "build_campaign_alignment_rows",
     "SensorDistributionDiagnostics",
     "SensorRankingResult",
     "build_dataset_summary_rows",

@@ -11,6 +11,11 @@ import pytest
 
 from measurement_calibration.sensor_ranking import (
     RbwAcquisitionDataset,
+    FileSystemCampaignSensorDataRepository,
+    SensorRankingAnalysisConfig,
+    SensorRankingAnalyzer,
+    analyze_campaign_sensor_ranking,
+    build_campaign_alignment_rows,
     build_dataset_summary_rows,
     build_distribution_summary_rows,
     build_rbw_overview_rows,
@@ -256,6 +261,166 @@ def test_summarize_psd_distribution_highlights_distribution_outlier() -> None:
     assert summary_rows[-1]["is_low_similarity_outlier"] is True
 
 
+def test_analyze_campaign_sensor_ranking_adapts_to_flat_campaign_directory(
+    tmp_path: Path,
+) -> None:
+    """Campaign analysis should align partial sensor coverage dynamically."""
+
+    campaigns_root = tmp_path / "campaigns"
+    campaign_dir = campaigns_root / "dynamic-campaign"
+    campaign_dir.mkdir(parents=True)
+    base_records = [
+        [-61.0, -58.0, -54.0, -50.0, -48.5, -50.5],
+        [-62.0, -60.5, -57.0, -53.0, -49.5, -48.0],
+        [-63.0, -61.0, -58.0, -55.0, -52.0, -53.0],
+    ]
+    _write_campaign_csv(
+        campaign_dir / "Alpha.csv",
+        timestamps_ms=[1_000, 2_000, 3_000],
+        observations_db=base_records,
+    )
+    _write_campaign_csv(
+        campaign_dir / "Beta.csv",
+        timestamps_ms=[1_010, 3_010],
+        observations_db=[
+            [-60.9, -58.1, -54.1, -49.9, -48.6, -50.4],
+            [-63.1, -60.8, -58.1, -55.2, -52.2, -53.2],
+        ],
+    )
+    _write_campaign_csv(
+        campaign_dir / "Gamma.csv",
+        timestamps_ms=[995, 2_005, 2_995],
+        observations_db=[
+            [-50.5, -48.5, -50.0, -54.0, -58.0, -61.0],
+            [-48.0, -49.5, -53.0, -57.0, -60.5, -62.0],
+            [-53.0, -52.0, -55.0, -58.0, -61.0, -63.0],
+        ],
+    )
+
+    analysis = analyze_campaign_sensor_ranking(
+        "dynamic-campaign",
+        campaigns_root=campaigns_root,
+        config=SensorRankingAnalysisConfig(
+            ranking_histogram_bins=6,
+            distribution_histogram_bins=12,
+            alignment_tolerance_ms=50,
+        ),
+    )
+    alignment_rows = build_campaign_alignment_rows(analysis.alignment_diagnostics)
+
+    assert analysis.campaign_label == "dynamic-campaign"
+    assert analysis.dataset.dataset_label == "dynamic-campaign"
+    assert analysis.dataset.sensor_ids == ("Alpha", "Beta", "Gamma")
+    assert analysis.dataset.n_records == 2
+    assert analysis.alignment_diagnostics.anchor_sensor_id == "Beta"
+    assert analysis.alignment_diagnostics.aligned_record_count == 2
+    assert analysis.alignment_diagnostics.alignment_tolerance_ms == 50
+    assert analysis.ranking_result.ranking_sensor_ids[:2] == ("Alpha", "Beta")
+    assert analysis.ranking_result.ranking_sensor_ids[-1] == "Gamma"
+    assert alignment_rows == [
+        {
+            "campaign_label": "dynamic-campaign",
+            "sensor_id": "Alpha",
+            "is_anchor_sensor": False,
+            "source_records": 3,
+            "aligned_records": 2,
+            "dropped_records": 1,
+            "retained_fraction": pytest.approx(2.0 / 3.0),
+            "alignment_tolerance_ms": 50,
+            "mean_record_time_spread_ms": pytest.approx(15.0),
+            "max_record_time_spread_ms": pytest.approx(15.0),
+        },
+        {
+            "campaign_label": "dynamic-campaign",
+            "sensor_id": "Beta",
+            "is_anchor_sensor": True,
+            "source_records": 2,
+            "aligned_records": 2,
+            "dropped_records": 0,
+            "retained_fraction": pytest.approx(1.0),
+            "alignment_tolerance_ms": 50,
+            "mean_record_time_spread_ms": pytest.approx(15.0),
+            "max_record_time_spread_ms": pytest.approx(15.0),
+        },
+        {
+            "campaign_label": "dynamic-campaign",
+            "sensor_id": "Gamma",
+            "is_anchor_sensor": False,
+            "source_records": 3,
+            "aligned_records": 2,
+            "dropped_records": 1,
+            "retained_fraction": pytest.approx(2.0 / 3.0),
+            "alignment_tolerance_ms": 50,
+            "mean_record_time_spread_ms": pytest.approx(15.0),
+            "max_record_time_spread_ms": pytest.approx(15.0),
+        },
+    ]
+
+
+def test_sensor_ranking_analyzer_lists_and_analyzes_all_campaigns(
+    tmp_path: Path,
+) -> None:
+    """The repository/analyzer pair should cover every available campaign."""
+
+    campaigns_root = tmp_path / "campaigns"
+    first_campaign_dir = campaigns_root / "campaign-a"
+    second_campaign_dir = campaigns_root / "campaign-b"
+    first_campaign_dir.mkdir(parents=True)
+    second_campaign_dir.mkdir(parents=True)
+
+    _write_campaign_csv(
+        first_campaign_dir / "SensorA.csv",
+        timestamps_ms=[1_000, 2_000],
+        observations_db=[
+            [-60.0, -59.0, -58.0, -57.0],
+            [-60.5, -59.5, -58.5, -57.5],
+        ],
+    )
+    _write_campaign_csv(
+        first_campaign_dir / "SensorB.csv",
+        timestamps_ms=[1_020, 2_010],
+        observations_db=[
+            [-60.2, -59.2, -58.1, -57.1],
+            [-60.6, -59.4, -58.4, -57.4],
+        ],
+    )
+    _write_campaign_csv(
+        second_campaign_dir / "SensorA.csv",
+        timestamps_ms=[5_000, 6_000],
+        observations_db=[
+            [-72.0, -71.0, -70.0, -69.0],
+            [-72.4, -71.5, -70.4, -69.4],
+        ],
+    )
+    _write_campaign_csv(
+        second_campaign_dir / "SensorB.csv",
+        timestamps_ms=[5_010, 6_005],
+        observations_db=[
+            [-72.1, -71.1, -70.1, -69.1],
+            [-72.5, -71.4, -70.5, -69.5],
+        ],
+    )
+
+    repository = FileSystemCampaignSensorDataRepository(campaigns_root=campaigns_root)
+    analyzer = SensorRankingAnalyzer(
+        repository=repository,
+        config=SensorRankingAnalysisConfig(
+            ranking_histogram_bins=4,
+            distribution_histogram_bins=8,
+            alignment_tolerance_ms=50,
+        ),
+    )
+
+    assert repository.list_campaign_labels() == ("campaign-a", "campaign-b")
+    analyses = analyzer.analyze_all_campaigns()
+
+    assert tuple(analyses) == ("campaign-a", "campaign-b")
+    assert analyses["campaign-a"].dataset.sensor_ids == ("SensorA", "SensorB")
+    assert analyses["campaign-b"].dataset.sensor_ids == ("SensorA", "SensorB")
+    assert analyses["campaign-a"].alignment_diagnostics.aligned_record_count == 2
+    assert analyses["campaign-b"].alignment_diagnostics.aligned_record_count == 2
+
+
 def _write_rbw_csv(
     path: Path,  # Output CSV path
     timestamps_ms: list[int],  # Row timestamps [ms]
@@ -279,5 +444,48 @@ def _write_rbw_csv(
                     "start_freq_hz": 88.0e6,
                     "end_freq_hz": 108.0e6,
                     "timestamp": timestamp_ms,
+                }
+            )
+
+
+def _write_campaign_csv(
+    path: Path,  # Output CSV path
+    timestamps_ms: list[int],  # Row timestamps [ms]
+    observations_db: list[list[float]],  # PSD rows in dB
+) -> None:
+    """Write a campaign-style CSV with the richer API client schema."""
+
+    with path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(
+            csv_file,
+            fieldnames=(
+                "id",
+                "mac",
+                "campaign_id",
+                "pxx",
+                "start_freq_hz",
+                "end_freq_hz",
+                "timestamp",
+                "created_at",
+            ),
+        )
+        writer.writeheader()
+
+        # Keep the campaign fixture schema realistic while still exercising the
+        # ranking loader's minimal required columns.
+        for row_index, (timestamp_ms, power_db) in enumerate(
+            zip(timestamps_ms, observations_db, strict=True),
+            start=1,
+        ):
+            writer.writerow(
+                {
+                    "id": row_index,
+                    "mac": f"mac-{path.stem.lower()}",
+                    "campaign_id": 999,
+                    "pxx": json.dumps(power_db),
+                    "start_freq_hz": 88.0e6,
+                    "end_freq_hz": 108.0e6,
+                    "timestamp": timestamp_ms,
+                    "created_at": "",
                 }
             )
