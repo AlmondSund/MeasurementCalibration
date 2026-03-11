@@ -1,4 +1,4 @@
-"""Spectral calibration framework for common-field sensor experiments.
+"""Spectral calibration framework for aligned sensor experiments.
 
 This module implements the latent-variable calibration model described in
 ``docs/main.tex``. The core model assumes that, during calibration, every
@@ -7,7 +7,8 @@ additive noise floor, and residual variance curves.
 
 The implementation keeps the numerical core separate from notebook orchestration:
 
-- CSV parsing and experiment alignment live in :func:`load_calibration_dataset`.
+- Dataset-specific loading and alignment live in higher-level adapters, such
+  as :mod:`measurement_calibration.campaign_calibration`.
 - Alternating estimation of the latent spectra and sensor parameters lives in
   :func:`fit_spectral_calibration`.
 - Deployment-time correction and consensus fusion live in
@@ -16,16 +17,9 @@ The implementation keeps the numerical core separate from notebook orchestration
 
 from __future__ import annotations
 
-from collections import Counter
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
-import csv
 import inspect
-import json
-import math
-import sys
-from pathlib import Path
-from statistics import median
 import warnings
 
 import numpy as np
@@ -187,16 +181,6 @@ class SpectralCalibrationResult:
     solver_nonfinite_step_count: IndexArray
 
 
-@dataclass(frozen=True)
-class _AcquisitionRecord:
-    """Single acquisition row parsed from the CSV files."""
-
-    timestamp_ms: int
-    start_freq_hz: float
-    end_freq_hz: float
-    power_db: FloatArray
-
-
 def power_db_to_linear(
     power_db: FloatArray,  # PSD values in dB-like units
 ) -> FloatArray:  # Linear power ratio on the same array shape
@@ -252,181 +236,6 @@ def _sigmoid(
     exp_values = np.exp(values[negative_mask])
     result[negative_mask] = exp_values / (1.0 + exp_values)
     return result
-
-
-def load_calibration_dataset(
-    acquisition_dir: Path,  # Directory with sensor acquisition CSV files
-    response_dir: Path,  # Directory with nominal response CSV files
-    reference_sensor_id: str = "Node1-Bogota",  # Sensor used as alignment reference
-    excluded_sensor_ids: Collection[str]
-    | None = None,  # Sensors removed before alignment
-    max_alignment_shift: int = 3,  # Maximum integer experiment offset to search
-) -> CalibrationDataset:  # Aligned tensor ready for calibration
-    """Load, align, and validate the common-field calibration dataset.
-
-    The loader performs the minimum boundary work needed by the notebook:
-
-    - Parse the PSD vectors stored inside the acquisition CSV rows.
-    - Select the acquisition band shared by all sensors.
-    - Align the per-sensor experiment sequences using small integer index shifts.
-    - Interpolate nominal frequency-response curves onto the acquisition grid.
-
-    Parameters
-    ----------
-    acquisition_dir:
-        Directory containing one acquisition CSV per sensor.
-    response_dir:
-        Directory containing one nominal response CSV per sensor.
-    reference_sensor_id:
-        Sensor used to define the experiment ordering and reference timestamps.
-    excluded_sensor_ids:
-        Optional sensor identifiers to remove before selecting the common band
-        and aligning experiments. This is useful when external metadata shows
-        that a subset of sensors violates the common-field assumptions.
-    max_alignment_shift:
-        Maximum absolute index shift considered when aligning each sensor to the
-        reference sequence. This keeps the alignment logic simple and explicit.
-
-    Returns
-    -------
-    CalibrationDataset
-        Structured dataset with aligned PSD tensors in linear power units.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the acquisition or response directories do not exist.
-    ValueError
-        If no common acquisition band exists or the aligned tensor is empty.
-    """
-
-    if not acquisition_dir.exists():
-        raise FileNotFoundError(
-            f"Acquisition directory does not exist: {acquisition_dir}"
-        )
-    if not response_dir.exists():
-        raise FileNotFoundError(f"Response directory does not exist: {response_dir}")
-
-    acquisition_paths = sorted(acquisition_dir.glob("*.csv"))
-    if not acquisition_paths:
-        raise ValueError(f"No acquisition CSV files were found in {acquisition_dir}")
-
-    records_by_sensor = {
-        path.stem: _load_acquisition_records(path) for path in acquisition_paths
-    }
-    excluded_sensor_ids = frozenset(
-        () if excluded_sensor_ids is None else excluded_sensor_ids
-    )
-    if excluded_sensor_ids:
-        unknown_sensor_ids = sorted(
-            excluded_sensor_ids.difference(records_by_sensor.keys())
-        )
-        if unknown_sensor_ids:
-            raise ValueError(
-                "excluded_sensor_ids contains unknown sensors: "
-                + ", ".join(unknown_sensor_ids)
-            )
-        if reference_sensor_id in excluded_sensor_ids:
-            raise ValueError(
-                "reference_sensor_id cannot be excluded from the calibration dataset"
-            )
-        records_by_sensor = {
-            sensor_id: records
-            for sensor_id, records in records_by_sensor.items()
-            if sensor_id not in excluded_sensor_ids
-        }
-
-    sensor_ids = tuple(sorted(records_by_sensor))
-
-    if reference_sensor_id not in records_by_sensor:
-        raise ValueError(
-            f"Reference sensor {reference_sensor_id!r} was not found in the acquisition set"
-        )
-
-    selected_band_hz = _select_common_band(records_by_sensor)
-    filtered_records = {
-        sensor_id: [
-            record
-            for record in sensor_records
-            if math.isclose(record.start_freq_hz, selected_band_hz[0])
-            and math.isclose(record.end_freq_hz, selected_band_hz[1])
-        ]
-        for sensor_id, sensor_records in records_by_sensor.items()
-    }
-
-    shifts, alignment_errors = _infer_alignment_shifts(
-        records_by_sensor=filtered_records,
-        reference_sensor_id=reference_sensor_id,
-        max_alignment_shift=max_alignment_shift,
-    )
-    source_row_indices, reference_indices = _build_common_indices(
-        lengths_by_sensor={
-            sensor_id: len(records) for sensor_id, records in filtered_records.items()
-        },
-        sensor_shifts=shifts,
-        reference_sensor_id=reference_sensor_id,
-    )
-
-    if reference_indices.size == 0:
-        raise ValueError(
-            "The aligned experiment set is empty after applying the sensor shifts"
-        )
-
-    reference_record = filtered_records[reference_sensor_id][int(reference_indices[0])]
-    frequency_hz = _build_frequency_grid(
-        start_freq_hz=reference_record.start_freq_hz,
-        end_freq_hz=reference_record.end_freq_hz,
-        n_bins=reference_record.power_db.size,
-    )
-
-    observations_power = []
-    for sensor_id in sensor_ids:
-        sensor_records = filtered_records[sensor_id]
-        aligned_power_db = np.stack(
-            [
-                sensor_records[int(index)].power_db
-                for index in source_row_indices[sensor_id]
-            ],
-            axis=0,
-        )
-        observations_power.append(power_db_to_linear(aligned_power_db))
-
-    nominal_gain_power = np.stack(
-        [
-            _load_nominal_gain_curve(
-                response_path=response_dir / f"{sensor_id}-response.csv",
-                target_frequency_hz=frequency_hz,
-            )
-            for sensor_id in sensor_ids
-        ],
-        axis=0,
-    )
-
-    # Normalize the nominal curves to the network reference scale so the
-    # identifiability constraint is consistent from the start.
-    nominal_gain_power = _normalize_geometric_mean(nominal_gain_power)
-
-    experiment_timestamps_ms = np.asarray(
-        [
-            filtered_records[reference_sensor_id][int(index)].timestamp_ms
-            for index in reference_indices
-        ],
-        dtype=np.int64,
-    )
-
-    dataset = CalibrationDataset(
-        sensor_ids=sensor_ids,
-        frequency_hz=frequency_hz,
-        observations_power=np.stack(observations_power, axis=0),
-        nominal_gain_power=nominal_gain_power,
-        experiment_timestamps_ms=experiment_timestamps_ms,
-        selected_band_hz=selected_band_hz,
-        sensor_shifts=shifts,
-        alignment_median_error_ms=alignment_errors,
-        source_row_indices=source_row_indices,
-    )
-    _validate_observation_tensor(dataset.observations_power)
-    return dataset
 
 
 def make_holdout_split(
@@ -1049,188 +858,6 @@ def compute_network_consensus(
         numerator[valid_consensus_mask] / denominator[valid_consensus_mask]
     )
     return consensus
-
-
-def _load_acquisition_records(
-    path: Path,  # Acquisition CSV path
-) -> list[_AcquisitionRecord]:  # Parsed rows sorted by timestamp
-    """Parse the acquisition CSV into timestamped PSD vectors."""
-
-    csv.field_size_limit(sys.maxsize)
-    records = []
-    with path.open(newline="") as csv_file:
-        for row in csv.DictReader(csv_file):
-            power_db = np.asarray(json.loads(row["pxx"]), dtype=np.float64)
-            records.append(
-                _AcquisitionRecord(
-                    timestamp_ms=int(row["timestamp"]),
-                    start_freq_hz=float(row["start_freq_hz"]),
-                    end_freq_hz=float(row["end_freq_hz"]),
-                    power_db=power_db,
-                )
-            )
-    records.sort(key=lambda record: record.timestamp_ms)
-    return records
-
-
-def _load_nominal_gain_curve(
-    response_path: Path,  # Nominal response CSV path
-    target_frequency_hz: FloatArray,  # Frequency grid used by the calibration tensor
-) -> FloatArray:  # Interpolated nominal gain in linear power scale
-    """Load a nominal response CSV and interpolate its dB error curve."""
-
-    if not response_path.exists():
-        raise FileNotFoundError(f"Nominal response CSV does not exist: {response_path}")
-
-    numeric_rows: list[tuple[float, float]] = []
-    with response_path.open(newline="") as csv_file:
-        for row in csv.DictReader(csv_file):
-            try:
-                frequency_hz = float(row["central_freq_hz"])
-                error_db = float(row["error_dB"])
-            except (TypeError, ValueError):
-                continue
-            numeric_rows.append((frequency_hz, error_db))
-
-    if not numeric_rows:
-        raise ValueError(f"No numeric response rows were found in {response_path}")
-
-    numeric_rows.sort(key=lambda item: item[0])
-    response_frequency_hz = np.asarray(
-        [item[0] for item in numeric_rows], dtype=np.float64
-    )
-    response_error_db = np.asarray([item[1] for item in numeric_rows], dtype=np.float64)
-    interpolated_error_db = np.interp(
-        x=np.asarray(target_frequency_hz, dtype=np.float64),
-        xp=response_frequency_hz,
-        fp=response_error_db,
-        left=response_error_db[0],
-        right=response_error_db[-1],
-    )
-    return power_db_to_linear(interpolated_error_db)
-
-
-def _select_common_band(
-    records_by_sensor: dict[
-        str, list[_AcquisitionRecord]
-    ],  # Parsed acquisition rows for each sensor
-) -> tuple[float, float]:  # Shared acquisition band with the widest coverage
-    """Select the frequency band that is shared by every sensor."""
-
-    coverage_by_band: dict[tuple[float, float], dict[str, int]] = {}
-    for sensor_id, sensor_records in records_by_sensor.items():
-        counts = Counter(
-            (record.start_freq_hz, record.end_freq_hz) for record in sensor_records
-        )
-        for band_hz, count in counts.items():
-            coverage_by_band.setdefault(band_hz, {})[sensor_id] = count
-
-    shared_bands = [
-        (band_hz, counts_by_sensor)
-        for band_hz, counts_by_sensor in coverage_by_band.items()
-        if len(counts_by_sensor) == len(records_by_sensor)
-    ]
-    if not shared_bands:
-        raise ValueError("No acquisition band is shared by all sensors")
-
-    best_band_hz, _ = max(
-        shared_bands,
-        key=lambda item: (min(item[1].values()), sum(item[1].values())),
-    )
-    return best_band_hz
-
-
-def _infer_alignment_shifts(
-    records_by_sensor: dict[
-        str, list[_AcquisitionRecord]
-    ],  # Filtered same-band records for each sensor
-    reference_sensor_id: str,  # Sensor used as alignment reference
-    max_alignment_shift: int,  # Search range for the integer index shift
-) -> tuple[
-    dict[str, int], dict[str, float]
-]:  # Shift per sensor and median absolute timing error [ms]
-    """Infer a small integer index shift for each sensor sequence."""
-
-    reference_records = records_by_sensor[reference_sensor_id]
-    shifts: dict[str, int] = {}
-    alignment_errors: dict[str, float] = {}
-
-    for sensor_id, sensor_records in records_by_sensor.items():
-        if sensor_id == reference_sensor_id:
-            shifts[sensor_id] = 0
-            alignment_errors[sensor_id] = 0.0
-            continue
-
-        best_shift = 0
-        best_error = float("inf")
-
-        for shift in range(-max_alignment_shift, max_alignment_shift + 1):
-            time_differences = [
-                sensor_records[sensor_index].timestamp_ms
-                - reference_records[reference_index].timestamp_ms
-                for reference_index in range(len(reference_records))
-                if 0 <= (sensor_index := reference_index + shift) < len(sensor_records)
-            ]
-            if not time_differences:
-                continue
-            median_abs_error_ms = float(
-                median(abs(delta_ms) for delta_ms in time_differences)
-            )
-            if median_abs_error_ms < best_error or (
-                math.isclose(median_abs_error_ms, best_error)
-                and abs(shift) < abs(best_shift)
-            ):
-                best_shift = shift
-                best_error = median_abs_error_ms
-
-        shifts[sensor_id] = best_shift
-        alignment_errors[sensor_id] = best_error
-
-    return shifts, alignment_errors
-
-
-def _build_common_indices(
-    lengths_by_sensor: dict[
-        str, int
-    ],  # Number of available rows per sensor after same-band filtering
-    sensor_shifts: dict[
-        str, int
-    ],  # Integer index shift relative to the reference sensor
-    reference_sensor_id: str,  # Reference sensor name
-) -> tuple[
-    dict[str, IndexArray], IndexArray
-]:  # Per-sensor source indices and reference indices
-    """Compute the common experiment indices that remain valid for all sensors."""
-
-    reference_length = lengths_by_sensor[reference_sensor_id]
-    start_index = max(max(0, -shift) for shift in sensor_shifts.values())
-    stop_index = min(
-        min(reference_length, lengths_by_sensor[sensor_id] - shift)
-        for sensor_id, shift in sensor_shifts.items()
-    )
-
-    if stop_index <= start_index:
-        raise ValueError(
-            "No common aligned experiments remain after the sensor shifts were applied"
-        )
-
-    reference_indices = np.arange(start_index, stop_index, dtype=np.int64)
-    source_row_indices = {
-        sensor_id: reference_indices + shift
-        for sensor_id, shift in sensor_shifts.items()
-    }
-    return source_row_indices, reference_indices
-
-
-def _build_frequency_grid(
-    start_freq_hz: float,  # Lower band edge [Hz]
-    end_freq_hz: float,  # Upper band edge [Hz]
-    n_bins: int,  # Number of PSD bins
-) -> FloatArray:  # Frequency-bin centers [Hz]
-    """Build equally spaced frequency-bin centers from the acquisition band."""
-
-    bin_width_hz = (end_freq_hz - start_freq_hz) / n_bins
-    return start_freq_hz + (np.arange(n_bins, dtype=np.float64) + 0.5) * bin_width_hz
 
 
 def _resolve_experiment_split_indices(
