@@ -162,7 +162,7 @@
     "configuration_latent_dim": 4,
     "sensor_embedding_dim": 4
   },
-  "parameters_file": "calibration_parameters.npz",
+  "parameters_file": "model.npz",
   "provenance": {
     "corpus_fingerprint": "217b183e4ad13ea1d4302ac017cd44002386673a9687d7e404e020371c63f55d",
     "git_branch": "main",

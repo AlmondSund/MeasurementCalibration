@@ -9,6 +9,8 @@ import numpy as np
 import pytest
 
 from measurement_calibration.artifacts import (
+    DEFAULT_PRODUCTION_PARAMETERS_FILENAME,
+    archive_artifact_directory,
     load_two_level_calibration_artifact,
     save_two_level_calibration_artifact,
 )
@@ -148,3 +150,82 @@ def test_save_and_load_two_level_calibration_artifact_round_trip(
     assert "reference_weight" in rows[0]
     assert "embedding_norm" in rows[0]
     assert "campaigns_seen" in rows[0]
+
+
+def test_save_and_load_two_level_calibration_artifact_with_custom_npz_name(
+    tmp_path: Path,
+) -> None:
+    """Artifacts should support an explicit notebook-facing parameter filename."""
+
+    fixture = build_synthetic_two_level_fixture()
+    result = fit_two_level_calibration(
+        corpus=fixture.corpus,
+        basis_config=fixture.basis_config,
+        model_config=fixture.model_config,
+        fit_config=fixture.fit_config,
+    )
+
+    artifact = save_two_level_calibration_artifact(
+        output_dir=tmp_path / "artifact",
+        result=result,
+        parameters_filename=DEFAULT_PRODUCTION_PARAMETERS_FILENAME,
+    )
+    loaded = load_two_level_calibration_artifact(artifact.output_dir)
+
+    assert artifact.parameters_path.name == DEFAULT_PRODUCTION_PARAMETERS_FILENAME
+    assert artifact.parameters_path.exists()
+    assert loaded.manifest["parameters_file"] == DEFAULT_PRODUCTION_PARAMETERS_FILENAME
+    assert loaded.parameters_path.name == DEFAULT_PRODUCTION_PARAMETERS_FILENAME
+
+
+def test_archive_artifact_directory_moves_existing_bundle_into_archive_root(
+    tmp_path: Path,
+) -> None:
+    """Archiving should move the live bundle into a unique archive directory."""
+
+    production_dir = tmp_path / "models" / "production"
+    production_dir.mkdir(parents=True)
+    (production_dir / "manifest.json").write_text("{}", encoding="utf-8")
+    (production_dir / "model.npz").write_bytes(b"npz-bytes")
+
+    archive_dir = archive_artifact_directory(
+        output_dir=production_dir,
+        archive_root=tmp_path / "models" / "archive",
+        archive_label="production",
+    )
+
+    assert archive_dir is not None
+    assert archive_dir.parent == tmp_path / "models" / "archive"
+    assert archive_dir.name.startswith("production__")
+    assert not production_dir.exists()
+    assert (archive_dir / "manifest.json").read_text(encoding="utf-8") == "{}"
+    assert (archive_dir / "model.npz").read_bytes() == b"npz-bytes"
+
+
+def test_archive_artifact_directory_returns_none_for_missing_or_empty_bundle(
+    tmp_path: Path,
+) -> None:
+    """Archiving should ignore production locations without a saved artifact."""
+
+    archive_root = tmp_path / "models" / "archive"
+
+    assert (
+        archive_artifact_directory(
+            output_dir=tmp_path / "models" / "missing-production",
+            archive_root=archive_root,
+        )
+        is None
+    )
+
+    empty_production_dir = tmp_path / "models" / "production"
+    empty_production_dir.mkdir(parents=True)
+
+    assert (
+        archive_artifact_directory(
+            output_dir=empty_production_dir,
+            archive_root=archive_root,
+        )
+        is None
+    )
+    assert empty_production_dir.exists()
+    assert not any(archive_root.glob("*"))

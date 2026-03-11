@@ -36,6 +36,10 @@ from .spectral_calibration import (
 
 
 MODEL_SCHEMA_VERSION = 2
+DEFAULT_ARTIFACT_PARAMETERS_FILENAME = "calibration_parameters.npz"
+DEFAULT_PRODUCTION_ARTIFACT_DIR = Path("models") / "production"
+DEFAULT_ARCHIVED_ARTIFACTS_DIR = Path("models") / "archive"
+DEFAULT_PRODUCTION_PARAMETERS_FILENAME = "model.npz"
 
 
 @dataclass(frozen=True)
@@ -65,22 +69,43 @@ def save_two_level_calibration_artifact(
     output_dir: Path,  # Destination directory for the artifact bundle
     result: TwoLevelCalibrationResult,  # Fitted calibration model
     extra_summary: dict[str, int | float] | None = None,
+    parameters_filename: str = DEFAULT_ARTIFACT_PARAMETERS_FILENAME,
 ) -> SavedCalibrationArtifact:
     """Persist a fitted two-level calibration model to disk.
+
+    Purpose
+    -------
+    The saved bundle is the deployment boundary for notebook and application
+    workflows. Most callers can rely on the default parameter filename, while
+    notebook-facing production workflows may override it with a stable
+    deployment name such as ``model.npz``.
+
+    Parameters
+    ----------
+    output_dir:
+        Destination directory for the saved artifact bundle.
+    result:
+        Fitted calibration model to serialize.
+    extra_summary:
+        Optional scalar metadata merged into ``manifest.json``.
+    parameters_filename:
+        Simple ``.npz`` filename used for the serialized parameter archive
+        inside ``output_dir``.
 
     Side Effects
     ------------
     Creates ``output_dir`` when needed and writes:
 
     - ``manifest.json`` with configuration, provenance, and high-level summary;
-    - ``calibration_parameters.npz`` with the trainable arrays and campaign states;
+    - one ``.npz`` parameter archive with the trainable arrays and campaign
+      states;
     - ``sensor_summary.csv`` with compact per-sensor training statistics.
     """
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    parameters_path = output_dir / "calibration_parameters.npz"
+    parameters_path = output_dir / _validate_parameters_filename(parameters_filename)
     manifest_path = output_dir / "manifest.json"
     sensor_summary_path = output_dir / "sensor_summary.csv"
 
@@ -212,6 +237,72 @@ def load_two_level_calibration_artifact(
     )
 
 
+def archive_artifact_directory(
+    output_dir: Path,  # Live artifact directory to archive
+    archive_root: Path = DEFAULT_ARCHIVED_ARTIFACTS_DIR,
+    archive_label: str | None = None,  # Prefix used for the archived directory
+) -> Path | None:
+    """Move an existing artifact directory into a timestamped archive location.
+
+    Purpose
+    -------
+    Notebook workflows keep a single stable production path for deployment.
+    Before a new production artifact is written, the previous bundle can be
+    moved under ``archive_root`` so the latest model remains easy to load while
+    replaced fits stay auditable.
+
+    Parameters
+    ----------
+    output_dir:
+        Existing artifact directory that should stop being the live location.
+    archive_root:
+        Parent directory that stores timestamped archived bundles.
+    archive_label:
+        Optional prefix for the archived directory name. When omitted, the stem
+        uses ``output_dir.name``.
+
+    Returns
+    -------
+    Path | None
+        New archived directory path, or ``None`` when ``output_dir`` does not
+        exist yet or does not contain a saved bundle.
+
+    Side Effects
+    ------------
+    Creates ``archive_root`` when needed and renames ``output_dir`` into a
+    unique timestamped directory beneath it.
+
+    Raises
+    ------
+    NotADirectoryError
+        If ``output_dir`` exists but is not a directory.
+    ValueError
+        If ``archive_label`` cannot be normalized into a filesystem-safe token.
+    """
+
+    resolved_output_dir = Path(output_dir)
+    if not resolved_output_dir.exists():
+        return None
+    if not resolved_output_dir.is_dir():
+        raise NotADirectoryError(
+            f"Artifact output_dir must be a directory: {resolved_output_dir}"
+        )
+    if not any(resolved_output_dir.iterdir()):
+        return None
+
+    resolved_archive_root = Path(archive_root)
+    resolved_archive_root.mkdir(parents=True, exist_ok=True)
+    label_token = _normalize_archive_label(
+        resolved_output_dir.name if archive_label is None else archive_label
+    )
+    archive_dir = _build_unique_archive_dir(
+        archive_root=resolved_archive_root,
+        archive_label=label_token,
+    )
+    resolved_output_dir.rename(archive_dir)
+    return archive_dir
+
+
 def write_sensor_calibration_summary_csv(
     output_path: Path,  # CSV destination path
     result: TwoLevelCalibrationResult,  # Fitted model to summarize
@@ -224,6 +315,63 @@ def write_sensor_calibration_summary_csv(
         writer = csv.DictWriter(csv_file, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _validate_parameters_filename(parameters_filename: str) -> str:
+    """Validate the artifact parameter archive filename.
+
+    The artifact format stores a single NPZ file inside ``output_dir``. This
+    helper keeps that contract explicit by rejecting nested paths and
+    non-``.npz`` filenames early.
+    """
+
+    normalized_filename = str(parameters_filename).strip()
+    if not normalized_filename:
+        raise ValueError("parameters_filename must be a non-empty filename")
+
+    filename_path = Path(normalized_filename)
+    if filename_path.name != normalized_filename:
+        raise ValueError(
+            "parameters_filename must be a simple filename without directory "
+            f"components, got {parameters_filename!r}"
+        )
+    if filename_path.suffix != ".npz":
+        raise ValueError(
+            f"parameters_filename must end with '.npz', got {parameters_filename!r}"
+        )
+    return normalized_filename
+
+
+def _normalize_archive_label(archive_label: str) -> str:
+    """Normalize one archive directory label into a filesystem-safe token."""
+
+    normalized_label = "".join(
+        character.lower() if character.isalnum() else "-"
+        for character in str(archive_label).strip()
+    ).strip("-")
+    normalized_label = "-".join(token for token in normalized_label.split("-") if token)
+    if not normalized_label:
+        raise ValueError(
+            f"archive_label must contain at least one alphanumeric token: {archive_label!r}"
+        )
+    return normalized_label
+
+
+def _build_unique_archive_dir(
+    archive_root: Path,
+    archive_label: str,
+) -> Path:
+    """Build a unique timestamped archive directory path."""
+
+    timestamp_utc = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    candidate = archive_root / f"{archive_label}__{timestamp_utc}"
+    suffix_index = 1
+    while candidate.exists():
+        candidate = (
+            archive_root / f"{archive_label}__{timestamp_utc}_{suffix_index:02d}"
+        )
+        suffix_index += 1
+    return candidate
 
 
 def _build_parameter_archive_payload(
@@ -699,9 +847,14 @@ def _nanmedian_from_samples(samples: list[np.ndarray]) -> float:
 
 
 __all__ = [
+    "DEFAULT_ARCHIVED_ARTIFACTS_DIR",
+    "DEFAULT_ARTIFACT_PARAMETERS_FILENAME",
+    "DEFAULT_PRODUCTION_ARTIFACT_DIR",
+    "DEFAULT_PRODUCTION_PARAMETERS_FILENAME",
     "LoadedCalibrationArtifact",
     "MODEL_SCHEMA_VERSION",
     "SavedCalibrationArtifact",
+    "archive_artifact_directory",
     "load_two_level_calibration_artifact",
     "save_two_level_calibration_artifact",
     "write_sensor_calibration_summary_csv",

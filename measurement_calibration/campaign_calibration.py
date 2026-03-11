@@ -20,7 +20,11 @@ import time
 
 import numpy as np
 
-from .artifacts import SavedCalibrationArtifact, save_two_level_calibration_artifact
+from .artifacts import (
+    DEFAULT_ARTIFACT_PARAMETERS_FILENAME,
+    SavedCalibrationArtifact,
+    save_two_level_calibration_artifact,
+)
 from .sensor_ranking import (
     DEFAULT_CAMPAIGNS_DATA_DIR,
     CampaignAlignmentDiagnostics,
@@ -499,8 +503,43 @@ def fit_and_save_calibration_corpus_model(
     fit_config: TwoLevelFitConfig | None = None,
     sensor_reference_weight_by_id: Mapping[str, float] | None = None,
     extra_summary: Mapping[str, int | float] | None = None,
+    parameters_filename: str = DEFAULT_ARTIFACT_PARAMETERS_FILENAME,
 ) -> CalibrationCorpusFitResult:
-    """Fit and persist one corpus-level configuration-conditional model."""
+    """Fit and persist one corpus-level configuration-conditional model.
+
+    Purpose
+    -------
+    This service layer keeps notebook and application workflows away from the
+    numerical fitting details. The domain layer returns a fitted result, while
+    this boundary function measures wall-clock fit time and persists the
+    resulting artifact bundle to disk.
+
+    Parameters
+    ----------
+    preparation:
+        Prepared offline corpus consumed by the numerical trainer.
+    output_dir:
+        Directory that will receive the saved artifact bundle.
+    basis_config, model_config, fit_config:
+        Optional model hyperparameters forwarded to the numerical core.
+    sensor_reference_weight_by_id:
+        Optional sensor-specific weighting override.
+    extra_summary:
+        Optional scalar metadata persisted into the artifact manifest.
+    parameters_filename:
+        Simple ``.npz`` filename used for the serialized parameter archive
+        inside ``output_dir``.
+
+    Returns
+    -------
+    CalibrationCorpusFitResult
+        Structured fit result that contains the prepared corpus, numerical
+        result, saved artifact metadata, and measured fit duration.
+
+    Side Effects
+    ------------
+    Runs the numerical training routine and writes the artifact bundle to disk.
+    """
 
     start_time = time.perf_counter()
     result = fit_two_level_calibration(
@@ -518,6 +557,7 @@ def fit_and_save_calibration_corpus_model(
         output_dir=output_dir,
         result=result,
         extra_summary=summary_payload,
+        parameters_filename=parameters_filename,
     )
     return CalibrationCorpusFitResult(
         preparation=preparation,

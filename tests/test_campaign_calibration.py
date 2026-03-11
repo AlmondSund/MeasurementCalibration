@@ -8,7 +8,10 @@ from pathlib import Path
 
 import numpy as np
 
-from measurement_calibration.artifacts import load_two_level_calibration_artifact
+from measurement_calibration.artifacts import (
+    DEFAULT_PRODUCTION_PARAMETERS_FILENAME,
+    load_two_level_calibration_artifact,
+)
 from measurement_calibration.campaign_calibration import (
     build_corpus_calibration_output_dir,
     fit_and_save_calibration_corpus_model,
@@ -182,12 +185,18 @@ def test_prepare_calibration_corpus_and_fit_wrapper_write_artifact(
             gradient_clip_norm=2.0,
             random_seed=1,
         ),
+        parameters_filename=DEFAULT_PRODUCTION_PARAMETERS_FILENAME,
     )
     loaded = load_two_level_calibration_artifact(output_dir)
 
     assert preparation.corpus.sensor_ids == ("Node1", "Node2", "Node3", "Node9")
     assert len(preparation.prepared_campaigns) == 2
     assert fit_result.fit_duration_s >= 0.0
+    assert (
+        fit_result.artifact.parameters_path.name
+        == DEFAULT_PRODUCTION_PARAMETERS_FILENAME
+    )
+    assert loaded.parameters_path.name == DEFAULT_PRODUCTION_PARAMETERS_FILENAME
     assert loaded.manifest["training_summary"]["n_campaigns"] == 2
     assert len(loaded.result.campaign_states) == 2
 
