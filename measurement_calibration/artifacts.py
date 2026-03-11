@@ -12,15 +12,21 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import csv
+import hashlib
 import json
+import platform
 from pathlib import Path
+import subprocess
+import sys
 from typing import Any
 
 import numpy as np
+import scipy
 
 from .spectral_calibration import (
     CampaignCalibrationState,
     CampaignConfiguration,
+    FitConvergenceDiagnostics,
     FrequencyBasisConfig,
     PersistentModelConfig,
     TwoLevelCalibrationResult,
@@ -86,8 +92,8 @@ def save_two_level_calibration_artifact(
 
     manifest = _build_artifact_manifest(
         result=result,
-        parameters_file=parameters_path.name,
-        sensor_summary_file=sensor_summary_path.name,
+        parameters_path=parameters_path,
+        sensor_summary_path=sensor_summary_path,
         extra_summary=extra_summary,
     )
     manifest_path.write_text(
@@ -151,6 +157,16 @@ def load_two_level_calibration_artifact(
             configuration_feature_scale=np.asarray(
                 arrays["configuration_feature_scale"], dtype=np.float64
             ),
+            configuration_feature_min=(
+                None
+                if "configuration_feature_min" not in arrays
+                else np.asarray(arrays["configuration_feature_min"], dtype=np.float64)
+            ),
+            configuration_feature_max=(
+                None
+                if "configuration_feature_max" not in arrays
+                else np.asarray(arrays["configuration_feature_max"], dtype=np.float64)
+            ),
             frequency_min_hz=float(arrays["frequency_min_hz"][0]),
             frequency_max_hz=float(arrays["frequency_max_hz"][0]),
             sensor_embeddings=np.asarray(arrays["sensor_embeddings"], dtype=np.float64),
@@ -167,9 +183,22 @@ def load_two_level_calibration_artifact(
             variance_head_weight=np.asarray(
                 arrays["variance_head_weight"], dtype=np.float64
             ),
-            variance_head_bias=np.asarray(arrays["variance_head_bias"], dtype=np.float64),
+            variance_head_bias=np.asarray(
+                arrays["variance_head_bias"], dtype=np.float64
+            ),
             campaign_states=campaign_states,
             objective_history=np.asarray(arrays["objective_history"], dtype=np.float64),
+            effective_variance_floor_power2=(
+                None
+                if "effective_variance_floor_power2" not in arrays
+                else float(arrays["effective_variance_floor_power2"][0])
+            ),
+            fit_diagnostics=_load_fit_diagnostics(
+                manifest=manifest,
+                objective_history=np.asarray(
+                    arrays["objective_history"], dtype=np.float64
+                ),
+            ),
         )
 
     sensor_summary_path = output_dir / str(manifest["sensor_summary_file"])
@@ -232,6 +261,19 @@ def _build_parameter_archive_payload(
         "variance_head_bias": np.asarray(result.variance_head_bias, dtype=np.float64),
         "objective_history": np.asarray(result.objective_history, dtype=np.float64),
     }
+    if result.effective_variance_floor_power2 is not None:
+        payload["effective_variance_floor_power2"] = np.asarray(
+            [result.effective_variance_floor_power2],
+            dtype=np.float64,
+        )
+    if result.configuration_feature_min is not None:
+        payload["configuration_feature_min"] = np.asarray(
+            result.configuration_feature_min, dtype=np.float64
+        )
+    if result.configuration_feature_max is not None:
+        payload["configuration_feature_max"] = np.asarray(
+            result.configuration_feature_max, dtype=np.float64
+        )
     for campaign_index, campaign_state in enumerate(result.campaign_states):
         payload[f"campaign_{campaign_index}_sensor_ids"] = np.asarray(
             campaign_state.sensor_ids
@@ -245,30 +287,30 @@ def _build_parameter_archive_payload(
         payload[f"campaign_{campaign_index}_persistent_log_gain"] = np.asarray(
             campaign_state.persistent_log_gain, dtype=np.float64
         )
-        payload[
-            f"campaign_{campaign_index}_persistent_floor_parameter"
-        ] = np.asarray(campaign_state.persistent_floor_parameter, dtype=np.float64)
-        payload[
-            f"campaign_{campaign_index}_persistent_variance_parameter"
-        ] = np.asarray(campaign_state.persistent_variance_parameter, dtype=np.float64)
+        payload[f"campaign_{campaign_index}_persistent_floor_parameter"] = np.asarray(
+            campaign_state.persistent_floor_parameter, dtype=np.float64
+        )
+        payload[f"campaign_{campaign_index}_persistent_variance_parameter"] = (
+            np.asarray(campaign_state.persistent_variance_parameter, dtype=np.float64)
+        )
         payload[f"campaign_{campaign_index}_deviation_log_gain"] = np.asarray(
             campaign_state.deviation_log_gain, dtype=np.float64
         )
-        payload[
-            f"campaign_{campaign_index}_deviation_floor_parameter"
-        ] = np.asarray(campaign_state.deviation_floor_parameter, dtype=np.float64)
-        payload[
-            f"campaign_{campaign_index}_deviation_variance_parameter"
-        ] = np.asarray(campaign_state.deviation_variance_parameter, dtype=np.float64)
+        payload[f"campaign_{campaign_index}_deviation_floor_parameter"] = np.asarray(
+            campaign_state.deviation_floor_parameter, dtype=np.float64
+        )
+        payload[f"campaign_{campaign_index}_deviation_variance_parameter"] = np.asarray(
+            campaign_state.deviation_variance_parameter, dtype=np.float64
+        )
         payload[f"campaign_{campaign_index}_gain_power"] = np.asarray(
             campaign_state.gain_power, dtype=np.float64
         )
         payload[f"campaign_{campaign_index}_additive_noise_power"] = np.asarray(
             campaign_state.additive_noise_power, dtype=np.float64
         )
-        payload[
-            f"campaign_{campaign_index}_residual_variance_power2"
-        ] = np.asarray(campaign_state.residual_variance_power2, dtype=np.float64)
+        payload[f"campaign_{campaign_index}_residual_variance_power2"] = np.asarray(
+            campaign_state.residual_variance_power2, dtype=np.float64
+        )
         payload[f"campaign_{campaign_index}_objective_value"] = np.asarray(
             [campaign_state.objective_value], dtype=np.float64
         )
@@ -277,8 +319,8 @@ def _build_parameter_archive_payload(
 
 def _build_artifact_manifest(
     result: TwoLevelCalibrationResult,
-    parameters_file: str,
-    sensor_summary_file: str,
+    parameters_path: Path,
+    sensor_summary_path: Path,
     extra_summary: dict[str, int | float] | None,
 ) -> dict[str, Any]:
     """Build the JSON manifest dictionary for one saved artifact."""
@@ -287,8 +329,8 @@ def _build_artifact_manifest(
         "schema_version": MODEL_SCHEMA_VERSION,
         "artifact_type": "configuration_conditional_calibration_model",
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
-        "parameters_file": parameters_file,
-        "sensor_summary_file": sensor_summary_file,
+        "parameters_file": parameters_path.name,
+        "sensor_summary_file": sensor_summary_path.name,
         "basis_config": asdict(result.basis_config),
         "model_config": asdict(result.model_config),
         "fit_config": asdict(result.fit_config),
@@ -302,7 +344,16 @@ def _build_artifact_manifest(
             )
         },
         "training_summary": _training_summary(result),
-        "campaigns": [_campaign_manifest_entry(campaign_state) for campaign_state in result.campaign_states],
+        "fit_diagnostics": asdict(result.fit_diagnostics),
+        "provenance": _build_provenance_manifest(
+            result=result,
+            parameters_path=parameters_path,
+            sensor_summary_path=sensor_summary_path,
+        ),
+        "campaigns": [
+            _campaign_manifest_entry(campaign_state)
+            for campaign_state in result.campaign_states
+        ],
     }
     if extra_summary is not None:
         manifest["extra_summary"] = _normalize_scalar_mapping(extra_summary)
@@ -319,10 +370,121 @@ def _training_summary(
         "n_sensors": len(result.sensor_ids),
         "objective_start": float(result.objective_history[0]),
         "objective_end": float(result.objective_history[-1]),
+        "objective_selected": float(result.fit_diagnostics.selected_objective_value),
+        "selected_outer_iteration": int(
+            result.fit_diagnostics.selected_outer_iteration
+        ),
+        "terminated_early": int(result.fit_diagnostics.terminated_early),
+        "effective_variance_floor_power2": float(
+            result.effective_variance_floor_power2
+            if result.effective_variance_floor_power2 is not None
+            else result.fit_config.sigma_min
+        ),
         "mean_campaign_objective": float(
-            np.mean([campaign_state.objective_value for campaign_state in result.campaign_states])
+            np.mean(
+                [
+                    campaign_state.objective_value
+                    for campaign_state in result.campaign_states
+                ]
+            )
         ),
     }
+
+
+def _build_provenance_manifest(
+    result: TwoLevelCalibrationResult,
+    parameters_path: Path,
+    sensor_summary_path: Path,
+) -> dict[str, Any]:
+    """Build reproducibility-oriented provenance metadata for the manifest."""
+
+    return {
+        "python_version": sys.version.split()[0],
+        "numpy_version": np.__version__,
+        "scipy_version": scipy.__version__,
+        "platform": platform.platform(),
+        "git_commit": _safe_git_command("rev-parse", "HEAD"),
+        "git_branch": _safe_git_command("rev-parse", "--abbrev-ref", "HEAD"),
+        "git_dirty": _safe_git_dirty(),
+        "corpus_fingerprint": _corpus_fingerprint(result),
+        "parameters_sha256": _sha256_file(parameters_path),
+        "sensor_summary_sha256": _sha256_file(sensor_summary_path),
+    }
+
+
+def _safe_git_command(*arguments: str) -> str | None:
+    """Return one git command output when available, otherwise ``None``."""
+
+    try:
+        completed = subprocess.run(
+            ["git", *arguments],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    output = completed.stdout.strip()
+    return output or None
+
+
+def _safe_git_dirty() -> bool | None:
+    """Return whether the git worktree is dirty when git metadata is available."""
+
+    try:
+        completed = subprocess.run(
+            ["git", "status", "--porcelain"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return bool(completed.stdout.strip())
+
+
+def _corpus_fingerprint(
+    result: TwoLevelCalibrationResult,
+) -> str:
+    """Build a stable fingerprint of the retained training-corpus support."""
+
+    fingerprint_payload = {
+        "sensor_ids": list(result.sensor_ids),
+        "campaigns": [
+            {
+                "campaign_label": campaign_state.campaign_label,
+                "sensor_ids": list(campaign_state.sensor_ids),
+                "n_acquisitions": int(campaign_state.latent_spectra_power.shape[0]),
+                "frequency_hz": [
+                    float(value) for value in np.asarray(campaign_state.frequency_hz)
+                ],
+                "configuration": asdict(campaign_state.configuration),
+            }
+            for campaign_state in result.campaign_states
+        ],
+    }
+    digest = hashlib.sha256(
+        json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    )
+    return digest.hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    """Return the SHA256 digest of one file on disk."""
+
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _campaign_manifest_entry(
@@ -339,6 +501,57 @@ def _campaign_manifest_entry(
         "configuration": asdict(campaign_state.configuration),
         "objective_value": float(campaign_state.objective_value),
     }
+
+
+def _load_fit_diagnostics(
+    manifest: Mapping[str, Any],
+    objective_history: np.ndarray,
+) -> FitConvergenceDiagnostics:
+    """Load fit diagnostics from the manifest or derive a backward-compatible default."""
+
+    fit_diagnostics_payload = manifest.get("fit_diagnostics")
+    if isinstance(fit_diagnostics_payload, Mapping):
+        return FitConvergenceDiagnostics(
+            selected_outer_iteration=int(
+                fit_diagnostics_payload["selected_outer_iteration"]
+            ),
+            n_completed_outer_iterations=int(
+                fit_diagnostics_payload["n_completed_outer_iterations"]
+            ),
+            selected_objective_value=float(
+                fit_diagnostics_payload["selected_objective_value"]
+            ),
+            final_objective_value=float(
+                fit_diagnostics_payload["final_objective_value"]
+            ),
+            terminated_early=bool(fit_diagnostics_payload["terminated_early"]),
+            termination_reason=str(fit_diagnostics_payload["termination_reason"]),
+            selected_from_best_iterate=bool(
+                fit_diagnostics_payload["selected_from_best_iterate"]
+            ),
+        )
+
+    if objective_history.size == 0:
+        return FitConvergenceDiagnostics(
+            selected_outer_iteration=0,
+            n_completed_outer_iterations=0,
+            selected_objective_value=float("nan"),
+            final_objective_value=float("nan"),
+            terminated_early=False,
+            termination_reason="loaded_without_diagnostics",
+            selected_from_best_iterate=False,
+        )
+
+    best_outer_iteration = int(np.argmin(objective_history))
+    return FitConvergenceDiagnostics(
+        selected_outer_iteration=best_outer_iteration,
+        n_completed_outer_iterations=int(objective_history.size),
+        selected_objective_value=float(objective_history[best_outer_iteration]),
+        final_objective_value=float(objective_history[-1]),
+        terminated_early=False,
+        termination_reason="loaded_without_diagnostics",
+        selected_from_best_iterate=best_outer_iteration != objective_history.size - 1,
+    )
 
 
 def _load_campaign_state(
@@ -445,7 +658,9 @@ def _build_sensor_summary_rows(
                 power_linear_to_db(campaign_state.gain_power[local_sensor_index])
             )
             training_noise_samples_db.append(
-                power_linear_to_db(campaign_state.additive_noise_power[local_sensor_index])
+                power_linear_to_db(
+                    campaign_state.additive_noise_power[local_sensor_index]
+                )
             )
             training_residual_std_samples_db.append(
                 power_linear_to_db(

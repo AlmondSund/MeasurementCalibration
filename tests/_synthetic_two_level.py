@@ -95,7 +95,10 @@ def build_synthetic_two_level_fixture() -> SyntheticTwoLevelFixture:
         ),
     )
     raw_feature_matrix = np.stack(
-        [configuration.to_feature_vector() for configuration in training_configurations],
+        [
+            configuration.to_feature_vector()
+            for configuration in training_configurations
+        ],
         axis=0,
     )
     feature_mean = np.mean(raw_feature_matrix, axis=0)
@@ -235,8 +238,10 @@ def build_synthetic_two_level_fixture() -> SyntheticTwoLevelFixture:
             endpoint=False,
             dtype=np.float64,
         )[:, np.newaxis]
-        raw_delta_log_gain = 0.025 * (campaign_index + 1) * np.sin(
-            2.0 * np.pi * normalized_frequency[np.newaxis, :] + sensor_phase
+        raw_delta_log_gain = (
+            0.025
+            * (campaign_index + 1)
+            * np.sin(2.0 * np.pi * normalized_frequency[np.newaxis, :] + sensor_phase)
         )
         delta_log_gain = raw_delta_log_gain - np.mean(
             raw_delta_log_gain, axis=0, keepdims=True
@@ -263,10 +268,12 @@ def build_synthetic_two_level_fixture() -> SyntheticTwoLevelFixture:
         )[:, np.newaxis]
         latent_power = np.clip(
             0.75
-            + 0.14 * np.sin(2.0 * np.pi * normalized_frequency[np.newaxis, :] + acquisition_phase)
-            + 0.06 * np.cos(
-                (campaign_index + 1) * np.pi * normalized_frequency[np.newaxis, :]
+            + 0.14
+            * np.sin(
+                2.0 * np.pi * normalized_frequency[np.newaxis, :] + acquisition_phase
             )
+            + 0.06
+            * np.cos((campaign_index + 1) * np.pi * normalized_frequency[np.newaxis, :])
             + 0.03 * np.arange(n_acquisitions, dtype=np.float64)[:, np.newaxis],
             0.08,
             None,
@@ -331,7 +338,9 @@ def build_synthetic_two_level_fixture() -> SyntheticTwoLevelFixture:
     )
     deployment_sensor_index = sensor_ids.index(deployment_sensor_id)
     deployment_gain_power = np.exp(deployment_log_gain_all[deployment_sensor_index])
-    deployment_floor_power = np.logaddexp(0.0, deployment_floor_all[deployment_sensor_index])
+    deployment_floor_power = np.logaddexp(
+        0.0, deployment_floor_all[deployment_sensor_index]
+    )
     deployment_variance_power2 = fit_config.sigma_min + np.logaddexp(
         0.0, deployment_variance_all[deployment_sensor_index]
     )

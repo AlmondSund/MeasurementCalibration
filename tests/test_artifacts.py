@@ -6,6 +6,7 @@ import csv
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from measurement_calibration.artifacts import (
     load_two_level_calibration_artifact,
@@ -37,17 +38,63 @@ def test_save_and_load_two_level_calibration_artifact_round_trip(
     loaded = load_two_level_calibration_artifact(artifact.output_dir)
 
     assert loaded.manifest["schema_version"] == 2
-    assert loaded.manifest["artifact_type"] == "configuration_conditional_calibration_model"
+    assert (
+        loaded.manifest["artifact_type"]
+        == "configuration_conditional_calibration_model"
+    )
     assert loaded.manifest["sensor_ids"] == list(result.sensor_ids)
-    assert loaded.manifest["training_summary"]["n_campaigns"] == len(result.campaign_states)
+    assert loaded.manifest["training_summary"]["n_campaigns"] == len(
+        result.campaign_states
+    )
+    assert loaded.manifest["training_summary"]["objective_selected"] == pytest.approx(
+        result.fit_diagnostics.selected_objective_value
+    )
+    assert loaded.manifest["training_summary"]["effective_variance_floor_power2"] == (
+        pytest.approx(result.effective_variance_floor_power2)
+    )
+    assert loaded.manifest["fit_diagnostics"]["selected_outer_iteration"] == (
+        result.fit_diagnostics.selected_outer_iteration
+    )
+    assert "provenance" in loaded.manifest
+    assert "python_version" in loaded.manifest["provenance"]
+    assert "numpy_version" in loaded.manifest["provenance"]
+    assert "scipy_version" in loaded.manifest["provenance"]
+    assert "corpus_fingerprint" in loaded.manifest["provenance"]
     assert loaded.manifest["extra_summary"]["fit_duration_s"] == 1.25
-    assert loaded.manifest["basis_config"]["n_gain_basis"] == fixture.basis_config.n_gain_basis
-    assert loaded.manifest["fit_config"]["n_outer_iterations"] == fixture.fit_config.n_outer_iterations
+    assert (
+        loaded.manifest["basis_config"]["n_gain_basis"]
+        == fixture.basis_config.n_gain_basis
+    )
+    assert (
+        loaded.manifest["fit_config"]["n_outer_iterations"]
+        == fixture.fit_config.n_outer_iterations
+    )
 
     assert loaded.result.sensor_ids == result.sensor_ids
-    assert np.allclose(loaded.result.sensor_reference_weight, result.sensor_reference_weight)
-    assert np.allclose(loaded.result.configuration_feature_mean, result.configuration_feature_mean)
-    assert np.allclose(loaded.result.configuration_feature_scale, result.configuration_feature_scale)
+    assert np.allclose(
+        loaded.result.sensor_reference_weight, result.sensor_reference_weight
+    )
+    assert np.allclose(
+        loaded.result.configuration_feature_mean, result.configuration_feature_mean
+    )
+    assert np.allclose(
+        loaded.result.configuration_feature_scale, result.configuration_feature_scale
+    )
+    assert loaded.result.configuration_feature_min is not None
+    assert loaded.result.configuration_feature_max is not None
+    assert result.configuration_feature_min is not None
+    assert result.configuration_feature_max is not None
+    assert loaded.result.effective_variance_floor_power2 is not None
+    assert result.effective_variance_floor_power2 is not None
+    assert np.allclose(
+        loaded.result.configuration_feature_min, result.configuration_feature_min
+    )
+    assert np.allclose(
+        loaded.result.configuration_feature_max, result.configuration_feature_max
+    )
+    assert loaded.result.effective_variance_floor_power2 == pytest.approx(
+        result.effective_variance_floor_power2
+    )
     assert np.allclose(loaded.result.sensor_embeddings, result.sensor_embeddings)
     assert np.allclose(
         loaded.result.configuration_encoder_weight,
@@ -64,6 +111,7 @@ def test_save_and_load_two_level_calibration_artifact_round_trip(
     assert np.allclose(loaded.result.variance_head_weight, result.variance_head_weight)
     assert np.allclose(loaded.result.variance_head_bias, result.variance_head_bias)
     assert np.allclose(loaded.result.objective_history, result.objective_history)
+    assert loaded.result.fit_diagnostics == result.fit_diagnostics
     assert len(loaded.result.campaign_states) == len(result.campaign_states)
 
     for loaded_state, original_state in zip(
