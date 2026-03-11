@@ -56,6 +56,41 @@ def test_load_campaign_configuration_parses_placeholder_metadata(
     assert configuration.antenna_amplifier_enabled is True
 
 
+def test_load_campaign_configuration_parses_api_style_metadata_aliases(
+    tmp_path: Path,
+) -> None:
+    """The parser should also accept the raw field names emitted by the API client."""
+
+    campaign_dir = tmp_path / "campaigns" / "MeasurementCalibration"
+    _write_metadata_csv(
+        campaign_dir / "metadata.csv",
+        {
+            "campaign_label": "MeasurementCalibration",
+            "name": "MeasurementCalibration",
+            "start_date": "03/10/2026",
+            "end_date": "03/10/2026",
+            "start_time": "00:00:00",
+            "end_time": "06:00:00",
+            "interval_seconds": "120",
+            "center_freq_hz": "98000000",
+            "span": "20",
+            "lna_gain": "0",
+            "vga_gain": "62",
+            "rbw": "10000",
+            "antenna_amp": "true",
+            "sample_rate_hz": "20000000",
+        },
+    )
+
+    configuration = load_campaign_configuration(campaign_dir)
+
+    assert configuration.central_frequency_hz == 98.0e6
+    assert configuration.span_hz == 20.0e6
+    assert configuration.resolution_bandwidth_hz == 10.0e3
+    assert configuration.acquisition_interval_s == 120.0
+    assert configuration.antenna_amplifier_enabled is True
+
+
 def test_prepare_calibration_campaign_builds_linear_power_campaign(
     tmp_path: Path,
 ) -> None:
@@ -82,7 +117,10 @@ def test_prepare_calibration_campaign_builds_linear_power_campaign(
     assert preparation.campaign.observations_power.shape == (4, 5, 8)
     assert np.all(preparation.campaign.observations_power > 0.0)
     assert preparation.campaign.configuration.central_frequency_hz == 98.0e6
-    assert preparation.reliable_sensor_id not in preparation.distribution_outlier_sensor_ids
+    assert (
+        preparation.reliable_sensor_id
+        not in preparation.distribution_outlier_sensor_ids
+    )
     assert preparation.distribution_outlier_sensor_ids == ("Node9",)
 
 

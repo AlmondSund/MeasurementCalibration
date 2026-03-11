@@ -3,10 +3,14 @@
 This module isolates the network and filesystem side effects required to:
 
 - Fetch paginated sensor measurements from the remote REST API.
+- Fetch campaign-level configuration metadata from ``/campaigns/{id}/parameters``.
 - Resolve campaign downloads against the full Node1..Node10 sensor network.
 - Persist campaign payloads to CSV files under ``data/campaigns/`` using the
   repository's acquisition schema.
-- Reload those CSV files into pandas data frames with parsed PSD arrays.
+- Materialize a campaign ``metadata.csv`` that remains compatible with the
+  repository calibration loaders while preserving the raw API fields.
+- Reload saved measurement CSV files into pandas data frames with parsed PSD
+  arrays.
 
 The client does not own any campaign registry. Callers must provide the
 campaign label and numeric identifier explicitly for each download request.
@@ -64,6 +68,22 @@ CSV_FIELDNAMES: tuple[str, ...] = (
     "depth_rms_deviation",
     "created_at",
 )
+METADATA_FIELDNAMES: tuple[str, ...] = (
+    "campaign_label",
+    "campaign_id",
+    "start_date",
+    "stop_date",
+    "start_time",
+    "stop_time",
+    "acquisition_freq_minutes",
+    "central_freq_MHz",
+    "span_MHz",
+    "sample_rate_hz",
+    "lna_gain_dB",
+    "vga_gain_dB",
+    "rbw_kHz",
+    "antenna_amp",
+)
 NUMERIC_COLUMNS: tuple[str, ...] = (
     "id",
     "campaign_id",
@@ -102,6 +122,83 @@ class MeasurementApiRequestError(MeasurementApiError):
 
 
 @dataclass(frozen=True)
+class CampaignScheduleParams:
+    """Typed schedule parameters returned by ``/campaigns/{id}/parameters``.
+
+    Parameters
+    ----------
+    start_date, end_date:
+        Campaign calendar bounds as provided by the API.
+    start_time, end_time:
+        Daily acquisition bounds as provided by the API.
+    interval_seconds:
+        Acquisition interval between measurements [s].
+    """
+
+    start_date: str
+    end_date: str
+    start_time: str
+    end_time: str
+    interval_seconds: int
+
+
+@dataclass(frozen=True)
+class CampaignConfigParams:
+    """Typed SDR configuration parameters returned by the campaign endpoint.
+
+    Parameters
+    ----------
+    rbw_hz:
+        Resolution bandwidth [Hz].
+    span_hz:
+        Acquisition span [Hz].
+    antenna:
+        Antenna identifier or label provided by the remote API.
+    lna_gain_db, vga_gain_db:
+        Front-end gain settings [dB].
+    antenna_amp:
+        Whether the antenna-side amplifier was enabled.
+    center_freq_hz:
+        Center frequency [Hz].
+    sample_rate_hz:
+        Sample rate [Hz] when provided by the API, otherwise ``None``.
+    raw_rbw, raw_span, raw_center_frequency:
+        Original API values retained for auditability and CSV persistence.
+    """
+
+    rbw_hz: float
+    span_hz: float
+    antenna: str
+    lna_gain_db: float
+    vga_gain_db: float
+    antenna_amp: bool
+    center_freq_hz: float
+    sample_rate_hz: float | None
+    raw_rbw: str
+    raw_span: str
+    raw_center_frequency: str | None
+
+
+@dataclass(frozen=True)
+class CampaignParameters:
+    """Typed campaign metadata returned by ``/campaigns/{id}/parameters``.
+
+    Parameters
+    ----------
+    name:
+        API-side campaign name.
+    schedule:
+        Acquisition schedule parameters.
+    config:
+        SDR configuration parameters.
+    """
+
+    name: str
+    schedule: CampaignScheduleParams
+    config: CampaignConfigParams
+
+
+@dataclass(frozen=True)
 class CampaignDownloadResult:
     """Materialized result of one campaign download request.
 
@@ -116,17 +213,25 @@ class CampaignDownloadResult:
     requested_sensor_mac_by_label:
         Effective sensor mapping used for this request after resolving any
         caller-provided labels or overrides.
+    metadata_csv_path:
+        Materialized campaign metadata path when ``download_campaign_csvs`` was
+        asked to persist metadata, otherwise ``None``.
+    campaign_parameters:
+        Parsed campaign-parameter payload fetched from the remote API when
+        metadata persistence is enabled, otherwise ``None``.
     saved_csv_paths:
         CSV path written for each sensor that produced retained measurements.
-        skipped_sensors:
-            Sensors that were skipped, together with the reason. Typical causes are
-            API 404 responses or empty datasets after filtering.
+    skipped_sensors:
+        Sensors that were skipped, together with the reason. Typical causes are
+        API 404 responses or empty datasets after filtering.
     """
 
     campaign_label: str
     campaign_id: int
     output_dir: Path
     requested_sensor_mac_by_label: dict[str, str]
+    metadata_csv_path: Path | None
+    campaign_parameters: CampaignParameters | None
     saved_csv_paths: dict[str, Path]
     skipped_sensors: dict[str, str]
 
@@ -254,6 +359,37 @@ class MeasurementApiClient:
 
         return measurements
 
+    def fetch_campaign_parameters(
+        self,
+        campaign_id: int,  # Campaign identifier resolved by the caller
+    ) -> CampaignParameters:
+        """Fetch and validate one campaign-parameter payload.
+
+        Parameters
+        ----------
+        campaign_id:
+            Campaign identifier used in the endpoint path.
+
+        Returns
+        -------
+        CampaignParameters
+            Parsed campaign metadata with normalized numeric units.
+
+        Raises
+        ------
+        ValueError
+            If ``campaign_id`` is invalid.
+        MeasurementApiError
+            If the endpoint payload is malformed or incomplete.
+        """
+
+        if campaign_id <= 0:
+            raise ValueError("campaign_id must be positive")
+
+        url = f"{self._config.base_url.rstrip('/')}/campaigns/{campaign_id}/parameters"
+        payload = self._request_json(url=url, params={})
+        return _parse_campaign_parameters_payload(payload)
+
     def download_campaign_csvs(
         self,
         campaign_label: str,  # Human-readable campaign name for the output path
@@ -263,6 +399,8 @@ class MeasurementApiClient:
         output_root: Path = CAMPAIGNS_DATA_DIR,  # Root under data/campaigns/
         drop_missing_pxx: bool = True,  # Skip rows without PSD payloads
         skip_missing_sensors: bool = True,  # Adapt to partial campaign coverage
+        include_metadata: bool = True,  # Persist metadata.csv from the API payload
+        metadata_filename: str = "metadata.csv",  # Metadata CSV name under output_dir
     ) -> CampaignDownloadResult:
         """Download one campaign and persist each available sensor payload as CSV.
 
@@ -292,6 +430,12 @@ class MeasurementApiClient:
             recorded in ``skipped_sensors`` instead of aborting the whole
             request. This enables one campaign request to adapt dynamically to
             partial sensor coverage.
+        include_metadata:
+            Whether to fetch ``/campaigns/{id}/parameters`` and write a
+            campaign ``metadata.csv`` alongside the sensor CSVs.
+        metadata_filename:
+            Metadata CSV file name written under the campaign output directory
+            when ``include_metadata`` is ``True``.
 
         Returns
         -------
@@ -301,13 +445,17 @@ class MeasurementApiClient:
         Side Effects
         ------------
         Issues one or more HTTPS GET requests per resolved sensor and writes one
-        CSV file per retained sensor dataset under ``output_root``.
+        CSV file per retained sensor dataset under ``output_root``. When
+        ``include_metadata`` is enabled, it also writes one campaign
+        ``metadata.csv``.
         """
 
         if not campaign_label.strip():
             raise ValueError("campaign_label must be a non-empty string")
         if campaign_id <= 0:
             raise ValueError("campaign_id must be positive")
+        if not metadata_filename.strip():
+            raise ValueError("metadata_filename must be a non-empty string")
 
         resolved_sensor_mac_by_label = resolve_sensor_mac_by_label(
             sensor_labels=sensor_labels,
@@ -318,6 +466,19 @@ class MeasurementApiClient:
             output_root=output_root,
         )
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        campaign_parameters: CampaignParameters | None = None
+        metadata_csv_path: Path | None = None
+        if include_metadata:
+            campaign_parameters = self.fetch_campaign_parameters(
+                campaign_id=campaign_id
+            )
+            metadata_csv_path = save_campaign_metadata_csv(
+                campaign_label=campaign_label,
+                campaign_id=campaign_id,
+                campaign_parameters=campaign_parameters,
+                output_path=output_dir / metadata_filename,
+            )
 
         saved_paths: dict[str, Path] = {}
         skipped_sensors: dict[str, str] = {}
@@ -366,6 +527,8 @@ class MeasurementApiClient:
             campaign_id=campaign_id,
             output_dir=output_dir,
             requested_sensor_mac_by_label=resolved_sensor_mac_by_label,
+            metadata_csv_path=metadata_csv_path,
+            campaign_parameters=campaign_parameters,
             saved_csv_paths=saved_paths,
             skipped_sensors=skipped_sensors,
         )
@@ -440,9 +603,7 @@ def resolve_sensor_mac_by_label(
     """
 
     if sensor_labels is not None and sensor_mac_by_label is not None:
-        raise ValueError(
-            "sensor_labels and sensor_mac_by_label are mutually exclusive"
-        )
+        raise ValueError("sensor_labels and sensor_mac_by_label are mutually exclusive")
 
     if sensor_mac_by_label is not None:
         resolved_mapping = dict(sensor_mac_by_label)
@@ -510,6 +671,72 @@ def save_measurements_csv(
         writer = csv.DictWriter(csv_file, fieldnames=CSV_FIELDNAMES)
         writer.writeheader()
         writer.writerows(normalized_rows)
+
+    return output_path
+
+
+def build_campaign_metadata_row(
+    campaign_label: str,  # Human-readable label used in the local repository
+    campaign_id: int,  # Numeric campaign identifier resolved by the caller
+    campaign_parameters: CampaignParameters,  # Parsed campaign metadata payload
+) -> dict[str, str]:
+    """Build one repository-compatible metadata row from the API payload.
+
+    The first columns intentionally mirror the historical placeholder file so
+    existing calibration loaders keep working. The remaining columns preserve
+    the raw API-facing names to reduce future migration friction.
+    """
+
+    if not campaign_label.strip():
+        raise ValueError("campaign_label must be a non-empty string")
+    if campaign_id <= 0:
+        raise ValueError("campaign_id must be positive")
+
+    schedule = campaign_parameters.schedule
+    config = campaign_parameters.config
+    row = {
+        "campaign_label": campaign_label.strip(),
+        "campaign_id": str(campaign_id),
+        "start_date": schedule.start_date,
+        "stop_date": schedule.end_date,
+        "start_time": schedule.start_time,
+        "stop_time": schedule.end_time,
+        "acquisition_freq_minutes": _format_metadata_number(
+            schedule.interval_seconds / 60.0
+        ),
+        "central_freq_MHz": _format_metadata_number(config.center_freq_hz / 1.0e6),
+        "span_MHz": _format_metadata_number(config.span_hz / 1.0e6),
+        "sample_rate_hz": (
+            ""
+            if config.sample_rate_hz is None
+            else _format_metadata_number(config.sample_rate_hz)
+        ),
+        "lna_gain_dB": _format_metadata_number(config.lna_gain_db),
+        "vga_gain_dB": _format_metadata_number(config.vga_gain_db),
+        "rbw_kHz": _format_metadata_number(config.rbw_hz / 1.0e3),
+        "antenna_amp": str(config.antenna_amp).lower(),
+    }
+    return row
+
+
+def save_campaign_metadata_csv(
+    campaign_label: str,  # Human-readable label used in the local repository
+    campaign_id: int,  # Numeric campaign identifier resolved by the caller
+    campaign_parameters: CampaignParameters,  # Parsed campaign metadata payload
+    output_path: Path,  # CSV destination path
+) -> Path:
+    """Write one campaign ``metadata.csv`` from the parsed API payload."""
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_row = build_campaign_metadata_row(
+        campaign_label=campaign_label,
+        campaign_id=campaign_id,
+        campaign_parameters=campaign_parameters,
+    )
+    with output_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=METADATA_FIELDNAMES)
+        writer.writeheader()
+        writer.writerow(metadata_row)
 
     return output_path
 
@@ -625,11 +852,177 @@ def _sanitize_path_component(
     return sanitized
 
 
+def _parse_campaign_parameters_payload(
+    payload: Mapping[str, Any],  # Raw JSON payload from /campaigns/{id}/parameters
+) -> CampaignParameters:
+    """Parse the campaign-parameter payload into typed repository helpers."""
+
+    schedule_payload = _require_mapping_field(payload, "schedule")
+    config_payload = _require_mapping_field(payload, "config")
+    schedule = CampaignScheduleParams(
+        start_date=_require_text_field(schedule_payload, "start_date"),
+        end_date=_require_text_field(schedule_payload, "end_date"),
+        start_time=_require_text_field(schedule_payload, "start_time"),
+        end_time=_require_text_field(schedule_payload, "end_time"),
+        interval_seconds=_require_int_field(schedule_payload, "interval_seconds"),
+    )
+
+    # The ANE client repository documents ``rbw`` as Hz and ``span`` as MHz.
+    # Keep that contract explicit here so the metadata CSV uses unambiguous
+    # physics-facing units while still preserving the original values.
+    raw_rbw = _require_text_field(config_payload, "rbw")
+    raw_span = _require_text_field(config_payload, "span")
+    config = CampaignConfigParams(
+        rbw_hz=_require_float_field(config_payload, "rbw"),
+        span_hz=_require_float_field(config_payload, "span") * 1.0e6,
+        antenna=_require_text_field(config_payload, "antenna"),
+        lna_gain_db=_require_float_field(config_payload, "lna_gain"),
+        vga_gain_db=_require_float_field(config_payload, "vga_gain"),
+        antenna_amp=_require_bool_field(config_payload, "antenna_amp"),
+        center_freq_hz=_require_float_field(config_payload, "center_freq_hz"),
+        sample_rate_hz=_optional_float_field(config_payload, "sample_rate_hz"),
+        raw_rbw=raw_rbw,
+        raw_span=raw_span,
+        raw_center_frequency=_optional_text_field(config_payload, "centerFrequency"),
+    )
+    return CampaignParameters(
+        name=_require_text_field(payload, "name"),
+        schedule=schedule,
+        config=config,
+    )
+
+
+def _require_mapping_field(
+    payload: Mapping[str, Any],  # Parent JSON object
+    field_name: str,  # Required child mapping name
+) -> Mapping[str, Any]:
+    """Return one required mapping-valued field from a JSON payload."""
+
+    value = payload.get(field_name)
+    if not isinstance(value, Mapping):
+        raise MeasurementApiError(
+            f"API payload is missing mapping field {field_name!r}"
+        )
+    return value
+
+
+def _require_text_field(
+    payload: Mapping[str, Any],  # JSON object that contains the field
+    field_name: str,  # Required text field
+) -> str:
+    """Return one required non-empty text field from a JSON payload."""
+
+    value = payload.get(field_name)
+    if value is None:
+        raise MeasurementApiError(f"API payload is missing field {field_name!r}")
+    normalized_value = str(value).strip()
+    if not normalized_value:
+        raise MeasurementApiError(f"API payload field {field_name!r} cannot be empty")
+    return normalized_value
+
+
+def _optional_text_field(
+    payload: Mapping[str, Any],  # JSON object that contains the field
+    field_name: str,  # Optional text field
+) -> str | None:
+    """Return one optional text field or ``None`` when it is absent."""
+
+    value = payload.get(field_name)
+    if value is None:
+        return None
+    normalized_value = str(value).strip()
+    return normalized_value or None
+
+
+def _require_float_field(
+    payload: Mapping[str, Any],  # JSON object that contains the field
+    field_name: str,  # Required numeric field
+) -> float:
+    """Return one required numeric field converted to ``float``."""
+
+    raw_value = payload.get(field_name)
+    if raw_value is None:
+        raise MeasurementApiError(f"API payload is missing field {field_name!r}")
+    try:
+        return float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise MeasurementApiError(
+            f"API payload field {field_name!r} must be numeric"
+        ) from exc
+
+
+def _optional_float_field(
+    payload: Mapping[str, Any],  # JSON object that contains the field
+    field_name: str,  # Optional numeric field
+) -> float | None:
+    """Return one optional numeric field converted to ``float``."""
+
+    raw_value = payload.get(field_name)
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, str) and raw_value == "":
+        return None
+    try:
+        return float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise MeasurementApiError(
+            f"API payload field {field_name!r} must be numeric"
+        ) from exc
+
+
+def _require_int_field(
+    payload: Mapping[str, Any],  # JSON object that contains the field
+    field_name: str,  # Required integer field
+) -> int:
+    """Return one required numeric field converted to ``int``."""
+
+    value = _require_float_field(payload, field_name)
+    if not float(value).is_integer():
+        raise MeasurementApiError(
+            f"API payload field {field_name!r} must be an integer value"
+        )
+    return int(value)
+
+
+def _require_bool_field(
+    payload: Mapping[str, Any],  # JSON object that contains the field
+    field_name: str,  # Required boolean field
+) -> bool:
+    """Return one required boolean-like field using a permissive parser."""
+
+    raw_value = payload.get(field_name)
+    if isinstance(raw_value, bool):
+        return raw_value
+    if raw_value is None:
+        raise MeasurementApiError(f"API payload is missing field {field_name!r}")
+
+    normalized_value = str(raw_value).strip().lower()
+    if normalized_value in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized_value in {"0", "false", "no", "n", "off"}:
+        return False
+    raise MeasurementApiError(f"API payload field {field_name!r} must be boolean-like")
+
+
+def _format_metadata_number(
+    value: float,  # Numeric value to serialize into metadata.csv
+) -> str:
+    """Serialize one metadata value without adding unnecessary trailing zeros."""
+
+    if float(value).is_integer():
+        return str(int(round(value)))
+    return f"{float(value):.12g}"
+
+
 __all__ = [
     "API_BASE_URL",
     "CAMPAIGNS_DATA_DIR",
     "CSV_FIELDNAMES",
+    "CampaignConfigParams",
     "CampaignDownloadResult",
+    "CampaignParameters",
+    "CampaignScheduleParams",
+    "METADATA_FIELDNAMES",
     "MeasurementApiClient",
     "MeasurementApiConfig",
     "MeasurementApiError",
@@ -637,8 +1030,10 @@ __all__ = [
     "NUMERIC_COLUMNS",
     "SENSOR_NETWORK_MAC_BY_LABEL",
     "build_campaign_output_dir",
+    "build_campaign_metadata_row",
     "load_measurement_dataframe",
     "load_measurement_frames",
     "resolve_sensor_mac_by_label",
+    "save_campaign_metadata_csv",
     "save_measurements_csv",
 ]

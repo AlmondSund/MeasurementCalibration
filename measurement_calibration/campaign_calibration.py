@@ -148,22 +148,27 @@ def load_campaign_configuration(
 ) -> CampaignConfiguration:
     """Parse the campaign metadata CSV into a typed configuration object.
 
-    The repository currently ships a placeholder schema, but callers should
-    not depend on those exact presentation labels. This parser therefore
-    resolves a small alias set for each required field and normalizes units to
-    the physics-facing contract used by the numerical core.
+    The repository currently ships a placeholder schema, but campaign metadata
+    can also be extracted directly from the remote API client. Callers should
+    therefore not depend on exact presentation labels. This parser resolves a
+    small alias set for each required field and normalizes units to the
+    physics-facing contract used by the numerical core.
     """
 
     metadata_path = Path(campaign_dir) / metadata_filename
     if not metadata_path.exists():
-        raise FileNotFoundError(f"Campaign metadata CSV does not exist: {metadata_path}")
+        raise FileNotFoundError(
+            f"Campaign metadata CSV does not exist: {metadata_path}"
+        )
 
     with metadata_path.open(newline="", encoding="utf-8") as csv_file:
         reader = csv.DictReader(csv_file)
         try:
             row = next(reader)
         except StopIteration as error:
-            raise ValueError(f"Campaign metadata CSV is empty: {metadata_path}") from error
+            raise ValueError(
+                f"Campaign metadata CSV is empty: {metadata_path}"
+            ) from error
     if row is None:
         raise ValueError(f"Campaign metadata CSV is empty: {metadata_path}")
 
@@ -179,8 +184,13 @@ def load_campaign_configuration(
             (
                 ("centralfreqmhz", 1.0e6),
                 ("centralfrequencymhz", 1.0e6),
+                ("centerfreqmhz", 1.0e6),
+                ("centerfrequencymhz", 1.0e6),
                 ("centralfreqhz", 1.0),
                 ("centralfrequencyhz", 1.0),
+                ("centerfreqhz", 1.0),
+                ("centerfrequencyhz", 1.0),
+                ("centerfrequency", 1.0),
             ),
             field_name="central_frequency_hz",
         ),
@@ -189,6 +199,7 @@ def load_campaign_configuration(
             (
                 ("spanmhz", 1.0e6),
                 ("bandwidthmhz", 1.0e6),
+                ("span", 1.0e6),
                 ("spanhz", 1.0),
                 ("bandwidthhz", 1.0),
             ),
@@ -199,6 +210,7 @@ def load_campaign_configuration(
             (
                 ("rbwkhz", 1.0e3),
                 ("resolutionbandwidthkhz", 1.0e3),
+                ("rbw", 1.0),
                 ("rbwhz", 1.0),
                 ("resolutionbandwidthhz", 1.0),
             ),
@@ -208,6 +220,7 @@ def load_campaign_configuration(
             normalized_row,
             (
                 ("lnagaindb", 1.0),
+                ("lnagain", 1.0),
                 ("lna_gain_db", 1.0),
             ),
             field_name="lna_gain_db",
@@ -216,6 +229,7 @@ def load_campaign_configuration(
             normalized_row,
             (
                 ("vgagaindb", 1.0),
+                ("vgagain", 1.0),
                 ("vga_gain_db", 1.0),
             ),
             field_name="vga_gain_db",
@@ -225,6 +239,7 @@ def load_campaign_configuration(
             (
                 ("acquisitionfreqminutes", 60.0),
                 ("acquisitionintervalminutes", 60.0),
+                ("intervalseconds", 1.0),
                 ("acquisitionfreqseconds", 1.0),
                 ("acquisitionintervalseconds", 1.0),
             ),
@@ -274,10 +289,12 @@ def prepare_calibration_campaign(
         metadata_filename=metadata_filename,
     )
     sensor_series_by_id = repository.load_campaign_sensor_series(campaign_label)
-    retained_sensor_series_by_id, resolved_excluded_sensor_ids = _exclude_campaign_sensor_series(
-        sensor_series_by_id=sensor_series_by_id,
-        excluded_sensor_ids=excluded_sensor_ids,
-        campaign_label=campaign_label,
+    retained_sensor_series_by_id, resolved_excluded_sensor_ids = (
+        _exclude_campaign_sensor_series(
+            sensor_series_by_id=sensor_series_by_id,
+            excluded_sensor_ids=excluded_sensor_ids,
+            campaign_label=campaign_label,
+        )
     )
 
     aligned_dataset, alignment_diagnostics = align_campaign_sensor_series(
@@ -350,7 +367,9 @@ def prepare_calibration_corpus(
         raise ValueError("No campaign labels were provided for corpus preparation")
 
     excluded_sensor_ids_by_campaign = (
-        {} if excluded_sensor_ids_by_campaign is None else dict(excluded_sensor_ids_by_campaign)
+        {}
+        if excluded_sensor_ids_by_campaign is None
+        else dict(excluded_sensor_ids_by_campaign)
     )
     prepared_campaigns = tuple(
         prepare_calibration_campaign(
@@ -436,8 +455,7 @@ def _exclude_campaign_sensor_series(
     }
     if len(retained_sensor_series_by_id) < 2:
         raise ValueError(
-            "At least two sensors must remain after exclusions for "
-            f"{campaign_label!r}"
+            f"At least two sensors must remain after exclusions for {campaign_label!r}"
         )
 
     return retained_sensor_series_by_id, tuple(sorted(excluded_sensor_id_set))

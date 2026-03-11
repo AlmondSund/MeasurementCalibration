@@ -1,2 +1,2 @@
-campaign_label,start_date,stop_date,start_time,stop_time,acquisition_freq_minutes,central_freq_MHz,span_MHz,lna_gain_dB,vga_gain_dB,rbw_kHz,antenna_amp
-MeasurementCalibration,03/10/2026,03/10/2026,00:00:00,06:00:00,2,98,20,0,62,10,true
+campaign_label,campaign_id,start_date,stop_date,start_time,stop_time,acquisition_freq_minutes,central_freq_MHz,span_MHz,sample_rate_hz,lna_gain_dB,vga_gain_dB,rbw_kHz,antenna_amp
+MeasurementCalibration,207,2026-03-11T00:00:00.000Z,2026-03-11T00:00:00.000Z,00:00:00,06:00:00,2,98,20,20000000,0,62,10,true
