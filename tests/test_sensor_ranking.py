@@ -14,6 +14,7 @@ from measurement_calibration.sensor_ranking import (
     FileSystemCampaignSensorDataRepository,
     SensorRankingAnalysisConfig,
     SensorRankingAnalyzer,
+    align_campaign_sensor_series_with_pruning,
     analyze_campaign_sensor_ranking,
     build_campaign_alignment_rows,
     build_dataset_summary_rows,
@@ -419,6 +420,60 @@ def test_sensor_ranking_analyzer_lists_and_analyzes_all_campaigns(
     assert analyses["campaign-b"].dataset.sensor_ids == ("SensorA", "SensorB")
     assert analyses["campaign-a"].alignment_diagnostics.aligned_record_count == 2
     assert analyses["campaign-b"].alignment_diagnostics.aligned_record_count == 2
+
+
+def test_align_campaign_sensor_series_with_pruning_keeps_largest_alignable_subset(
+    tmp_path: Path,
+) -> None:
+    """Alignment pruning should retain the largest subset with shared records."""
+
+    campaign_dir = tmp_path / "campaigns" / "subset-pruning"
+    campaign_dir.mkdir(parents=True)
+    base_records = [
+        [-60.0, -58.0, -55.0, -52.0],
+        [-60.5, -58.5, -55.5, -52.5],
+        [-61.0, -59.0, -56.0, -53.0],
+        [-61.5, -59.5, -56.5, -53.5],
+    ]
+    _write_campaign_csv(
+        campaign_dir / "SensorA.csv",
+        timestamps_ms=[1_000, 2_000, 3_000, 4_000],
+        observations_db=base_records,
+    )
+    _write_campaign_csv(
+        campaign_dir / "SensorB.csv",
+        timestamps_ms=[1_010, 2_010, 3_010, 4_010],
+        observations_db=base_records,
+    )
+    _write_campaign_csv(
+        campaign_dir / "SensorC.csv",
+        timestamps_ms=[990, 1_990, 2_990, 3_990],
+        observations_db=base_records,
+    )
+    _write_campaign_csv(
+        campaign_dir / "SensorD.csv",
+        timestamps_ms=[50_000, 51_000, 52_000, 53_000],
+        observations_db=base_records,
+    )
+    _write_campaign_csv(
+        campaign_dir / "SensorE.csv",
+        timestamps_ms=[1_700, 2_700, 3_700, 4_700],
+        observations_db=base_records,
+    )
+
+    repository = FileSystemCampaignSensorDataRepository(
+        campaigns_root=tmp_path / "campaigns"
+    )
+    alignment_result = align_campaign_sensor_series_with_pruning(
+        campaign_label="subset-pruning",
+        sensor_series_by_id=repository.load_campaign_sensor_series("subset-pruning"),
+        alignment_tolerance_ms=50,
+    )
+
+    assert alignment_result.dataset.sensor_ids == ("SensorA", "SensorB", "SensorC")
+    assert alignment_result.dataset.n_records == 4
+    assert alignment_result.pruned_sensor_ids == ("SensorD", "SensorE")
+    assert alignment_result.diagnostics.aligned_record_count == 4
 
 
 def _write_rbw_csv(

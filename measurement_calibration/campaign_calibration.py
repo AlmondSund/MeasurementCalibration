@@ -33,7 +33,7 @@ from .sensor_ranking import (
     SensorDistributionDiagnostics,
     SensorMeasurementSeries,
     SensorRankingResult,
-    align_campaign_sensor_series,
+    align_campaign_sensor_series_with_pruning,
     rank_sensors_by_cumulative_correlation,
     summarize_psd_distribution,
 )
@@ -84,6 +84,9 @@ class PreparedCalibrationCampaign:
         Reliable sensor selected from the ranking and distribution diagnostics.
     excluded_sensor_ids:
         Sensors explicitly removed before alignment.
+    alignment_pruned_sensor_ids:
+        Sensors automatically pruned because the full retained roster had no
+        timestamp-aligned record groups in common.
     distribution_outlier_sensor_ids:
         Retained sensors flagged as PSD-distribution outliers.
     ranking_histogram_bins, distribution_histogram_bins:
@@ -100,6 +103,7 @@ class PreparedCalibrationCampaign:
     alignment_diagnostics: CampaignAlignmentDiagnostics
     reliable_sensor_id: str
     excluded_sensor_ids: tuple[str, ...]
+    alignment_pruned_sensor_ids: tuple[str, ...]
     distribution_outlier_sensor_ids: tuple[str, ...]
     ranking_histogram_bins: int
     distribution_histogram_bins: int
@@ -271,6 +275,7 @@ def prepare_calibration_campaign(
     alignment_tolerance_ms: int | None = None,
     sensor_file_pattern: str = "*.csv",
     metadata_filename: str = _DEFAULT_METADATA_FILENAME,
+    allow_alignment_pruning: bool = True,
 ) -> PreparedCalibrationCampaign:
     """Prepare one campaign for the offline corpus.
 
@@ -278,9 +283,18 @@ def prepare_calibration_campaign(
     ----------------
     1. read and validate campaign metadata;
     2. load raw per-sensor series and apply explicit exclusions;
-    3. align rows by timestamp;
+    3. align rows by timestamp, pruning only the sensors that destroy all
+       shared overlap when ``allow_alignment_pruning`` is enabled;
     4. compute ranking diagnostics used for the reliable-sensor annotation;
     5. convert the aligned dB tensor to the linear-power campaign contract.
+
+    Parameters
+    ----------
+    allow_alignment_pruning:
+        Whether campaign preparation may automatically prune sensors when the
+        full retained roster has no shared aligned record groups. The pruned
+        sensors remain visible on the returned ``PreparedCalibrationCampaign``
+        so the fallback stays auditable.
     """
 
     repository = FileSystemCampaignSensorDataRepository(
@@ -302,11 +316,14 @@ def prepare_calibration_campaign(
         )
     )
 
-    aligned_dataset, alignment_diagnostics = align_campaign_sensor_series(
+    aligned_alignment_result = align_campaign_sensor_series_with_pruning(
         campaign_label=campaign_label,
         sensor_series_by_id=retained_sensor_series_by_id,
         alignment_tolerance_ms=alignment_tolerance_ms,
+        allow_pruning=allow_alignment_pruning,
     )
+    aligned_dataset = aligned_alignment_result.dataset
+    alignment_diagnostics = aligned_alignment_result.diagnostics
     ranking_result = rank_sensors_by_cumulative_correlation(
         aligned_dataset,
         histogram_bins=ranking_histogram_bins,
@@ -341,6 +358,7 @@ def prepare_calibration_campaign(
         alignment_diagnostics=alignment_diagnostics,
         reliable_sensor_id=reliable_sensor_id,
         excluded_sensor_ids=resolved_excluded_sensor_ids,
+        alignment_pruned_sensor_ids=aligned_alignment_result.pruned_sensor_ids,
         distribution_outlier_sensor_ids=distribution_outlier_sensor_ids,
         ranking_histogram_bins=int(ranking_histogram_bins),
         distribution_histogram_bins=int(distribution_histogram_bins),
@@ -356,8 +374,18 @@ def prepare_calibration_corpus(
     alignment_tolerance_ms: int | None = None,
     sensor_file_pattern: str = "*.csv",
     metadata_filename: str = _DEFAULT_METADATA_FILENAME,
+    allow_alignment_pruning: bool = True,
 ) -> CalibrationCorpusPreparation:
-    """Prepare a corpus of campaigns for the new offline calibration model."""
+    """Prepare a corpus of campaigns for the new offline calibration model.
+
+    Parameters
+    ----------
+    allow_alignment_pruning:
+        Whether each campaign may drop only the sensors that prevent any shared
+        aligned record groups from existing. This is enabled by default because
+        field corpora often contain a small number of sparse or shifted sensor
+        files that would otherwise make the whole campaign unusable.
+    """
 
     repository = FileSystemCampaignSensorDataRepository(
         campaigns_root=campaigns_root,
@@ -386,6 +414,7 @@ def prepare_calibration_corpus(
             alignment_tolerance_ms=alignment_tolerance_ms,
             sensor_file_pattern=sensor_file_pattern,
             metadata_filename=metadata_filename,
+            allow_alignment_pruning=allow_alignment_pruning,
         )
         for campaign_label in resolved_campaign_labels
     )

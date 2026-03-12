@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 import csv
+from itertools import combinations
 import json
 import sys
 from pathlib import Path
@@ -38,6 +39,10 @@ _METADATA_FILENAME = "metadata.csv"
 _MIN_ALIGNMENT_TOLERANCE_MS = 250
 _MAX_ALIGNMENT_TOLERANCE_MS = 5_000
 _ALIGNMENT_TOLERANCE_PERIOD_FRACTION = 0.25
+_MAX_EXACT_ALIGNMENT_SUBSET_SEARCH_SENSOR_COUNT = 12
+_NO_SHARED_ALIGNMENT_ERROR_PREFIX = (
+    "Campaign alignment could not find any record groups shared across all sensors"
+)
 
 
 @dataclass(frozen=True)
@@ -306,6 +311,27 @@ class CampaignAlignmentDiagnostics:
         if self.record_time_spread_ms.size == 0:
             return 0.0
         return float(np.max(self.record_time_spread_ms))
+
+
+@dataclass(frozen=True)
+class AlignmentPrunedCampaignDataset:
+    """Aligned campaign dataset plus the sensors pruned to make it feasible.
+
+    Parameters
+    ----------
+    dataset:
+        Row-aligned dataset built from the retained sensor subset.
+    diagnostics:
+        Alignment diagnostics for the retained subset.
+    pruned_sensor_ids:
+        Sensors removed because no full-network aligned record groups existed.
+        This keeps the fallback explicit instead of quietly pretending the
+        original campaign roster was usable as-is.
+    """
+
+    dataset: RbwAcquisitionDataset
+    diagnostics: CampaignAlignmentDiagnostics
+    pruned_sensor_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -740,6 +766,381 @@ def align_campaign_sensor_series(
         record_time_spread_ms=np.asarray(record_time_spread_ms, dtype=np.float64),
     )
     return dataset, diagnostics
+
+
+def align_campaign_sensor_series_with_pruning(
+    campaign_label: str,  # Campaign label resolved by the caller
+    sensor_series_by_id: Mapping[str, SensorMeasurementSeries],  # Raw per-sensor rows
+    alignment_tolerance_ms: int | None = None,
+    *,
+    allow_pruning: bool = True,  # Whether to prune sensors when full overlap fails
+) -> AlignmentPrunedCampaignDataset:
+    """Align a campaign, pruning only the sensors that destroy shared overlap.
+
+    Purpose
+    -------
+    Real campaign downloads can contain one or two sparse or time-shifted
+    sensors that prevent any record group from being shared across the full
+    retained sensor roster. The strict ``align_campaign_sensor_series`` helper
+    should keep failing loudly in that situation because ranking workflows may
+    want the full-set guarantee. Corpus preparation, however, benefits from a
+    more resilient policy: keep the largest alignable subset and make the
+    pruned sensors explicit.
+
+    Parameters
+    ----------
+    campaign_label:
+        Campaign label resolved by the caller.
+    sensor_series_by_id:
+        Raw per-sensor measurement rows before timestamp alignment.
+    alignment_tolerance_ms:
+        Optional explicit timestamp mismatch tolerance [ms].
+    allow_pruning:
+        Whether the helper may prune sensors after a strict full-set alignment
+        failure. When ``False`` this function behaves like the strict aligner
+        while still returning a structured result object on success.
+
+    Returns
+    -------
+    AlignmentPrunedCampaignDataset
+        Aligned dataset, diagnostics for the retained sensor subset, and the
+        sensors that had to be pruned to recover a usable campaign.
+    """
+
+    dataset, diagnostics = _try_align_campaign_subset(
+        campaign_label=campaign_label,
+        sensor_series_by_id=sensor_series_by_id,
+        retained_sensor_ids=tuple(sorted(sensor_series_by_id)),
+        alignment_tolerance_ms=alignment_tolerance_ms,
+        raise_on_no_shared_overlap=not allow_pruning,
+    )
+    if dataset is not None and diagnostics is not None:
+        return AlignmentPrunedCampaignDataset(
+            dataset=dataset,
+            diagnostics=diagnostics,
+            pruned_sensor_ids=(),
+        )
+    if not allow_pruning:
+        raise AssertionError("Strict alignment should have raised before this point")
+
+    subset_resolution = _find_best_alignable_sensor_subset(
+        campaign_label=campaign_label,
+        sensor_series_by_id=sensor_series_by_id,
+        alignment_tolerance_ms=alignment_tolerance_ms,
+    )
+    if subset_resolution is None:
+        raise ValueError(
+            "Campaign alignment could not find any record groups shared across "
+            "any retained sensor subset with at least two sensors in "
+            f"{campaign_label!r}"
+        )
+
+    return AlignmentPrunedCampaignDataset(
+        dataset=subset_resolution.dataset,
+        diagnostics=subset_resolution.diagnostics,
+        pruned_sensor_ids=subset_resolution.pruned_sensor_ids,
+    )
+
+
+@dataclass(frozen=True)
+class _AlignmentSubsetResolution:
+    """Successful alignment result for one retained sensor subset."""
+
+    dataset: RbwAcquisitionDataset
+    diagnostics: CampaignAlignmentDiagnostics
+    pruned_sensor_ids: tuple[str, ...]
+
+
+def _find_best_alignable_sensor_subset(
+    campaign_label: str,
+    sensor_series_by_id: Mapping[str, SensorMeasurementSeries],
+    alignment_tolerance_ms: int | None,
+) -> _AlignmentSubsetResolution | None:
+    """Return the largest, best-aligned sensor subset for one campaign.
+
+    The search favors:
+    1. more retained sensors;
+    2. more aligned record groups;
+    3. higher retained-row fractions across the surviving sensors.
+
+    Exact subset search is cheap for the small sensor counts used in the
+    current calibration corpus. A greedy fallback is kept for larger rosters so
+    this helper stays bounded even if future campaigns grow substantially.
+    """
+
+    sensor_ids = tuple(sorted(sensor_series_by_id))
+    if len(sensor_ids) <= _MAX_EXACT_ALIGNMENT_SUBSET_SEARCH_SENSOR_COUNT:
+        return _find_best_alignable_sensor_subset_exact(
+            campaign_label=campaign_label,
+            sensor_series_by_id=sensor_series_by_id,
+            alignment_tolerance_ms=alignment_tolerance_ms,
+        )
+    return _find_best_alignable_sensor_subset_greedy(
+        campaign_label=campaign_label,
+        sensor_series_by_id=sensor_series_by_id,
+        alignment_tolerance_ms=alignment_tolerance_ms,
+    )
+
+
+def _find_best_alignable_sensor_subset_exact(
+    campaign_label: str,
+    sensor_series_by_id: Mapping[str, SensorMeasurementSeries],
+    alignment_tolerance_ms: int | None,
+) -> _AlignmentSubsetResolution | None:
+    """Exhaustively search the best alignable subset for modest sensor counts."""
+
+    sensor_ids = tuple(sorted(sensor_series_by_id))
+    best_resolution: _AlignmentSubsetResolution | None = None
+
+    for subset_size in range(len(sensor_ids) - 1, 1, -1):
+        best_resolution = None
+        for retained_sensor_ids in combinations(sensor_ids, subset_size):
+            candidate = _resolve_alignment_subset_candidate(
+                campaign_label=campaign_label,
+                sensor_series_by_id=sensor_series_by_id,
+                retained_sensor_ids=retained_sensor_ids,
+                alignment_tolerance_ms=alignment_tolerance_ms,
+            )
+            if candidate is None:
+                continue
+            if best_resolution is None or _is_better_alignment_subset(
+                candidate=candidate,
+                reference=best_resolution,
+            ):
+                best_resolution = candidate
+        if best_resolution is not None:
+            return best_resolution
+
+    return None
+
+
+def _find_best_alignable_sensor_subset_greedy(
+    campaign_label: str,
+    sensor_series_by_id: Mapping[str, SensorMeasurementSeries],
+    alignment_tolerance_ms: int | None,
+) -> _AlignmentSubsetResolution | None:
+    """Greedily prune low-support sensors until a usable subset appears."""
+
+    sorted_series_by_id = {
+        sensor_id: _sort_sensor_series_by_timestamp(series)
+        for sensor_id, series in sensor_series_by_id.items()
+    }
+    resolved_tolerance_ms = _infer_alignment_tolerance_ms(
+        sorted_series_by_id=sorted_series_by_id,
+        alignment_tolerance_ms=alignment_tolerance_ms,
+    )
+    current_sensor_ids = tuple(sorted(sorted_series_by_id))
+
+    while len(current_sensor_ids) > 2:
+        best_resolution: _AlignmentSubsetResolution | None = None
+
+        # First prefer the smallest one-sensor pruning that already succeeds.
+        for sensor_id in current_sensor_ids:
+            retained_sensor_ids = tuple(
+                candidate_sensor_id
+                for candidate_sensor_id in current_sensor_ids
+                if candidate_sensor_id != sensor_id
+            )
+            candidate = _resolve_alignment_subset_candidate(
+                campaign_label=campaign_label,
+                sensor_series_by_id=sorted_series_by_id,
+                retained_sensor_ids=retained_sensor_ids,
+                alignment_tolerance_ms=resolved_tolerance_ms,
+            )
+            if candidate is None:
+                continue
+            if best_resolution is None or _is_better_alignment_subset(
+                candidate=candidate,
+                reference=best_resolution,
+            ):
+                best_resolution = candidate
+
+        if best_resolution is not None:
+            return best_resolution
+
+        # When every one-sensor pruning still fails, remove the sensor with
+        # the weakest pairwise timestamp support and try again on the smaller
+        # roster.
+        sensor_id_to_prune = _select_low_support_sensor_id(
+            current_sensor_ids=current_sensor_ids,
+            sorted_series_by_id=sorted_series_by_id,
+            alignment_tolerance_ms=resolved_tolerance_ms,
+        )
+        current_sensor_ids = tuple(
+            sensor_id
+            for sensor_id in current_sensor_ids
+            if sensor_id != sensor_id_to_prune
+        )
+
+    return _resolve_alignment_subset_candidate(
+        campaign_label=campaign_label,
+        sensor_series_by_id=sorted_series_by_id,
+        retained_sensor_ids=current_sensor_ids,
+        alignment_tolerance_ms=resolved_tolerance_ms,
+    )
+
+
+def _resolve_alignment_subset_candidate(
+    campaign_label: str,
+    sensor_series_by_id: Mapping[str, SensorMeasurementSeries],
+    retained_sensor_ids: tuple[str, ...],
+    alignment_tolerance_ms: int | None,
+) -> _AlignmentSubsetResolution | None:
+    """Return one successful retained subset or ``None`` when it still fails."""
+
+    dataset, diagnostics = _try_align_campaign_subset(
+        campaign_label=campaign_label,
+        sensor_series_by_id=sensor_series_by_id,
+        retained_sensor_ids=retained_sensor_ids,
+        alignment_tolerance_ms=alignment_tolerance_ms,
+        raise_on_no_shared_overlap=False,
+    )
+    if dataset is None or diagnostics is None:
+        return None
+
+    pruned_sensor_ids = tuple(
+        sensor_id
+        for sensor_id in sorted(sensor_series_by_id)
+        if sensor_id not in set(retained_sensor_ids)
+    )
+    return _AlignmentSubsetResolution(
+        dataset=dataset,
+        diagnostics=diagnostics,
+        pruned_sensor_ids=pruned_sensor_ids,
+    )
+
+
+def _try_align_campaign_subset(
+    campaign_label: str,
+    sensor_series_by_id: Mapping[str, SensorMeasurementSeries],
+    retained_sensor_ids: tuple[str, ...],
+    alignment_tolerance_ms: int | None,
+    *,
+    raise_on_no_shared_overlap: bool,
+) -> tuple[RbwAcquisitionDataset | None, CampaignAlignmentDiagnostics | None]:
+    """Try to align one retained sensor subset without masking other failures."""
+
+    retained_sensor_series_by_id = {
+        sensor_id: sensor_series_by_id[sensor_id] for sensor_id in retained_sensor_ids
+    }
+    try:
+        return align_campaign_sensor_series(
+            campaign_label=campaign_label,
+            sensor_series_by_id=retained_sensor_series_by_id,
+            alignment_tolerance_ms=alignment_tolerance_ms,
+        )
+    except ValueError as error:
+        if not _is_no_shared_alignment_error(error):
+            raise
+        if raise_on_no_shared_overlap:
+            raise
+    return None, None
+
+
+def _is_no_shared_alignment_error(error: ValueError) -> bool:
+    """Return whether the error means no shared aligned record groups exist."""
+
+    return str(error).startswith(_NO_SHARED_ALIGNMENT_ERROR_PREFIX)
+
+
+def _is_better_alignment_subset(
+    candidate: _AlignmentSubsetResolution,
+    reference: _AlignmentSubsetResolution,
+) -> bool:
+    """Return whether ``candidate`` is preferable to ``reference``."""
+
+    candidate_score = _alignment_subset_score(candidate)
+    reference_score = _alignment_subset_score(reference)
+    if candidate_score != reference_score:
+        return candidate_score > reference_score
+    return candidate.dataset.sensor_ids < reference.dataset.sensor_ids
+
+
+def _alignment_subset_score(
+    resolution: _AlignmentSubsetResolution,
+) -> tuple[int, int, float, float]:
+    """Build a deterministic score for comparing successful retained subsets."""
+
+    aligned_record_count = resolution.dataset.n_records
+    retained_fraction = aligned_record_count / np.maximum(
+        resolution.diagnostics.source_record_count.astype(np.float64),
+        1.0,
+    )
+    return (
+        len(resolution.dataset.sensor_ids),
+        aligned_record_count,
+        float(np.mean(retained_fraction)),
+        float(np.min(retained_fraction)),
+    )
+
+
+def _select_low_support_sensor_id(
+    current_sensor_ids: tuple[str, ...],
+    sorted_series_by_id: Mapping[str, SensorMeasurementSeries],
+    alignment_tolerance_ms: int,
+) -> str:
+    """Return the sensor that contributes the least timestamp-overlap support."""
+
+    lowest_support_signature: tuple[int, int, str] | None = None
+    lowest_support_sensor_id: str | None = None
+    for sensor_id in current_sensor_ids:
+        pairwise_support_count = 0
+        for other_sensor_id in current_sensor_ids:
+            if other_sensor_id == sensor_id:
+                continue
+            pairwise_support_count += _count_pairwise_timestamp_matches(
+                first_timestamps_ms=sorted_series_by_id[sensor_id].timestamps_ms,
+                second_timestamps_ms=sorted_series_by_id[other_sensor_id].timestamps_ms,
+                alignment_tolerance_ms=alignment_tolerance_ms,
+            )
+        support_signature = (
+            pairwise_support_count,
+            sorted_series_by_id[sensor_id].n_records,
+            sensor_id,
+        )
+        if (
+            lowest_support_signature is None
+            or support_signature < lowest_support_signature
+        ):
+            lowest_support_signature = support_signature
+            lowest_support_sensor_id = sensor_id
+
+    if lowest_support_sensor_id is None:
+        raise AssertionError("At least one sensor id must be available for pruning")
+    return lowest_support_sensor_id
+
+
+def _count_pairwise_timestamp_matches(
+    first_timestamps_ms: IndexArray,
+    second_timestamps_ms: IndexArray,
+    alignment_tolerance_ms: int,
+) -> int:
+    """Count monotone pairwise timestamp matches within the alignment tolerance."""
+
+    first_index = 0
+    second_index = 0
+    n_matches = 0
+
+    while (
+        first_index < first_timestamps_ms.size
+        and second_index < second_timestamps_ms.size
+    ):
+        first_timestamp_ms = int(first_timestamps_ms[first_index])
+        second_timestamp_ms = int(second_timestamps_ms[second_index])
+        timestamp_delta_ms = second_timestamp_ms - first_timestamp_ms
+
+        if abs(timestamp_delta_ms) <= alignment_tolerance_ms:
+            n_matches += 1
+            first_index += 1
+            second_index += 1
+            continue
+
+        if second_timestamp_ms < first_timestamp_ms - alignment_tolerance_ms:
+            second_index += 1
+        else:
+            first_index += 1
+
+    return n_matches
 
 
 def build_dataset_summary_rows(
@@ -1495,6 +1896,7 @@ def _load_sensor_csv(
 
 
 __all__ = [
+    "AlignmentPrunedCampaignDataset",
     "CampaignAlignmentDiagnostics",
     "CampaignSensorDataRepository",
     "CampaignSensorRankingAnalysis",
@@ -1505,6 +1907,7 @@ __all__ = [
     "SensorRankingAnalysisConfig",
     "SensorRankingAnalyzer",
     "align_campaign_sensor_series",
+    "align_campaign_sensor_series_with_pruning",
     "analyze_all_campaign_sensor_rankings",
     "analyze_campaign_sensor_ranking",
     "build_campaign_alignment_rows",

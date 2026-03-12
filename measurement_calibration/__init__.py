@@ -53,6 +53,7 @@ from .spectral_calibration import (
     power_linear_to_db,
 )
 from .sensor_ranking import (
+    AlignmentPrunedCampaignDataset,
     CampaignAlignmentDiagnostics,
     CampaignSensorDataRepository,
     CampaignSensorRankingAnalysis,
@@ -61,6 +62,7 @@ from .sensor_ranking import (
     SensorMeasurementSeries,
     SensorRankingAnalysisConfig,
     SensorRankingAnalyzer,
+    align_campaign_sensor_series_with_pruning,
     analyze_all_campaign_sensor_rankings,
     analyze_campaign_sensor_ranking,
     build_campaign_alignment_rows,
@@ -71,6 +73,7 @@ __all__ = [
     "CalibrationCorpus",
     "CalibrationCorpusFitResult",
     "CalibrationCorpusPreparation",
+    "AlignmentPrunedCampaignDataset",
     "CampaignAlignmentDiagnostics",
     "CampaignCalibrationState",
     "CampaignConfiguration",
@@ -99,6 +102,7 @@ __all__ = [
     "SensorRankingAnalyzer",
     "TwoLevelCalibrationResult",
     "TwoLevelFitConfig",
+    "align_campaign_sensor_series_with_pruning",
     "analyze_all_campaign_sensor_rankings",
     "analyze_campaign_sensor_ranking",
     "apply_deployed_calibration",

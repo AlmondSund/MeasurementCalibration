@@ -128,7 +128,77 @@ def test_prepare_calibration_campaign_builds_linear_power_campaign(
         preparation.reliable_sensor_id
         not in preparation.distribution_outlier_sensor_ids
     )
+    assert preparation.alignment_pruned_sensor_ids == ()
     assert preparation.distribution_outlier_sensor_ids == ("Node9",)
+
+
+def test_prepare_calibration_campaign_prunes_only_misaligned_sensors(
+    tmp_path: Path,
+) -> None:
+    """Campaign preparation should salvage a usable subset when alignment allows it."""
+
+    campaign_dir = tmp_path / "campaigns" / "alignment-pruning"
+    _write_metadata_csv(
+        campaign_dir / "metadata.csv",
+        {
+            "campaign_label": "alignment-pruning",
+            "start_date": "03/10/2026",
+            "stop_date": "03/10/2026",
+            "start_time": "00:00:00",
+            "stop_time": "06:00:00",
+            "acquisition_freq_minutes": "2",
+            "central_freq_MHz": "98",
+            "span_MHz": "20",
+            "lna_gain_dB": "0",
+            "vga_gain_dB": "62",
+            "rbw_kHz": "10",
+            "antenna_amp": "true",
+        },
+    )
+    base_records = np.asarray(
+        [
+            [-63.0, -61.0, -58.0, -54.0, -50.0, -49.0, -52.0, -57.0],
+            [-62.5, -60.3, -57.1, -53.4, -49.7, -48.8, -51.6, -56.3],
+            [-64.1, -61.7, -58.9, -55.1, -51.0, -50.2, -53.4, -58.0],
+            [-63.6, -61.4, -58.3, -54.7, -50.5, -49.6, -52.8, -57.5],
+        ],
+        dtype=np.float64,
+    )
+    _write_sensor_csv(
+        campaign_dir / "Node1.csv",
+        timestamps_ms=[1_000, 2_000, 3_000, 4_000],
+        observations_db=base_records + 0.05,
+    )
+    _write_sensor_csv(
+        campaign_dir / "Node2.csv",
+        timestamps_ms=[1_020, 2_020, 3_020, 4_020],
+        observations_db=base_records - 0.04,
+    )
+    _write_sensor_csv(
+        campaign_dir / "Node3.csv",
+        timestamps_ms=[980, 1_980, 2_980, 3_980],
+        observations_db=base_records + 0.12,
+    )
+    _write_sensor_csv(
+        campaign_dir / "Node7.csv",
+        timestamps_ms=[50_000, 51_000, 52_000, 53_000],
+        observations_db=base_records + 8.0,
+    )
+    _write_sensor_csv(
+        campaign_dir / "Node8.csv",
+        timestamps_ms=[1_700, 2_700, 3_700, 4_700],
+        observations_db=base_records - 6.0,
+    )
+
+    preparation = prepare_calibration_campaign(
+        campaign_label="alignment-pruning",
+        campaigns_root=tmp_path / "campaigns",
+        alignment_tolerance_ms=60,
+    )
+
+    assert preparation.campaign.sensor_ids == ("Node1", "Node2", "Node3")
+    assert preparation.alignment_pruned_sensor_ids == ("Node7", "Node8")
+    assert preparation.aligned_dataset.n_records == 4
 
 
 def test_prepare_calibration_corpus_and_fit_wrapper_write_artifact(
