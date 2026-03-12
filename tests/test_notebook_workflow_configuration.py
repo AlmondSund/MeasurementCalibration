@@ -122,11 +122,12 @@ def test_repository_notebook_workflow_config_matches_expected_campaign_split() -
 
     assert config.excluded_sensor_ids == ("Node9", "Node10")
     assert config.training_campaign_labels == (
+        "MeasurementCalibration",
         "LNA16_VGA0",
         "LNA16_VGA16",
         "LNA16_VGA32",
         "LNA16_VGA8",
-        "MeasurementCalibration",
+        "fm_ref_fullband_01",
     )
     assert config.testing_campaign_labels == ("test-calibration",)
 

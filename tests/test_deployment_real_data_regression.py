@@ -92,10 +92,16 @@ def test_checked_in_production_artifact_calibrates_real_deployment_campaign() ->
         assert curves.trust_diagnostics.configuration_out_of_distribution is False
         assert curves.trust_diagnostics.overall_out_of_distribution is False
         assert len(curves.trust_diagnostics.standardized_configuration) == 7
-        assert (
-            curves.trust_diagnostics.configuration_geometry_support_available is False
+        assert curves.trust_diagnostics.configuration_geometry_support_available is True
+        assert curves.trust_diagnostics.configuration_geometric_out_of_distribution is (
+            False
         )
-        assert curves.trust_diagnostics.configuration_mahalanobis_distance is None
+        assert curves.trust_diagnostics.configuration_mahalanobis_distance is not None
+        assert curves.trust_diagnostics.configuration_mahalanobis_threshold is not None
+        assert (
+            curves.trust_diagnostics.configuration_mahalanobis_distance
+            <= curves.trust_diagnostics.configuration_mahalanobis_threshold
+        )
         assert deployment.calibrated_power.shape == raw_power.shape
         assert deployment.propagated_variance_power2.shape == raw_power.shape
         assert deployment.uncertainty_scope == "observation_noise_only"
@@ -131,16 +137,16 @@ def test_checked_in_production_artifact_calibrates_real_deployment_campaign() ->
     assert max_gain_roughness < 1.0e-4
     assert max_floor_roughness < 1.0e-10
     assert max_variance_roughness < 1.0e-4
-    assert mean_gain_power == pytest.approx(1.1477344427444924, rel=1.0e-3)
+    assert mean_gain_power == pytest.approx(1.1385437097968687, rel=1.0e-3)
     assert mean_gain_sensor_spread == pytest.approx(
-        0.30680642847815703,
+        0.3226281060312406,
         rel=1.0e-3,
     )
-    assert mean_floor_power == pytest.approx(1.8067172572475745e-08, rel=1.0e-3)
-    assert mean_variance_power == pytest.approx(10.462046908752782, rel=1.0e-3)
-    assert mean_calibrated_power == pytest.approx(0.02865272568323571, rel=1.0e-3)
+    assert mean_floor_power == pytest.approx(2.0817873685183745e-08, rel=1.0e-3)
+    assert mean_variance_power == pytest.approx(10.356719759286053, rel=1.0e-3)
+    assert mean_calibrated_power == pytest.approx(0.02948249861471658, rel=1.0e-3)
     assert mean_calibrated_sensor_spread == pytest.approx(
-        0.015555538614144226,
+        0.015885243122829427,
         rel=1.0e-3,
     )
-    assert calibrated_power_p99 == pytest.approx(0.5522411220876211, rel=1.0e-3)
+    assert calibrated_power_p99 == pytest.approx(0.577663462385093, rel=1.0e-3)

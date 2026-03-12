@@ -15,6 +15,7 @@ from measurement_calibration.spectral_calibration import (
     _forward_campaign,
     _initialize_campaign_states,
     _initialize_persistent_parameters,
+    _optimizer_parameter_dict,
     _refresh_campaign_latent_and_variance,
     _resolve_effective_variance_floor_power2,
     _resolve_sensor_reference_weight,
@@ -305,13 +306,20 @@ def test_fit_two_level_calibration_tracks_campaign_parameters() -> None:
 
 
 @pytest.mark.parametrize(
-    ("parameter_name", "parameter_index"),
+    ("target_owner", "parameter_name", "parameter_index"),
     [
-        ("gain_head_bias", (0,)),
-        ("variance_head_bias", (0,)),
+        ("parameter_state", "sensor_embeddings", (0, 0)),
+        ("parameter_state", "configuration_encoder_weight", (0, 0)),
+        ("parameter_state", "gain_head_bias", (0,)),
+        ("parameter_state", "floor_head_weight", (0, 0)),
+        ("parameter_state", "variance_head_bias", (0,)),
+        ("campaign_state", "delta_log_gain", (0, 0)),
+        ("campaign_state", "delta_floor_parameter", (0, 0)),
+        ("campaign_state", "delta_variance_parameter", (0, 0)),
     ],
 )
 def test_single_campaign_gradients_match_finite_differences(
+    target_owner: str,
     parameter_name: str,
     parameter_index: tuple[int, ...],
 ) -> None:
@@ -345,7 +353,16 @@ def test_single_campaign_gradients_match_finite_differences(
         sensor_reference_weight=sensor_reference_weight,
     )
 
-    parameter = getattr(parameter_state, parameter_name)
+    optimizer_parameters = _optimizer_parameter_dict(
+        parameter_state=parameter_state,
+        campaign_states=[campaign_state],
+    )
+    gradient_name = (
+        parameter_name
+        if target_owner == "parameter_state"
+        else f"campaign_0_{parameter_name}"
+    )
+    parameter = optimizer_parameters[gradient_name]
     step_size = 1.0e-6
     parameter[parameter_index] += step_size
     positive_objective = _single_campaign_objective(
@@ -366,7 +383,7 @@ def test_single_campaign_gradients_match_finite_differences(
     parameter[parameter_index] += step_size
 
     numerical_gradient = (positive_objective - negative_objective) / (2.0 * step_size)
-    analytic_gradient = float(gradients[parameter_name][parameter_index])
+    analytic_gradient = float(gradients[gradient_name][parameter_index])
 
     assert analytic_gradient == pytest.approx(
         numerical_gradient,

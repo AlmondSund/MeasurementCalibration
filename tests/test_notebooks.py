@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 import json
 from pathlib import Path
+import sys
+import types
 from typing import Any
 
 import pytest
@@ -73,19 +75,31 @@ def _execute_code_cells(
     monkeypatch.chdir(_repo_root())
     monkeypatch.setenv("MPLBACKEND", "Agg")
 
-    namespace: dict[str, Any] = {
-        "__name__": "__notebook_smoke__",
-        "__file__": str(notebook_path),
-    }
-    cells = _load_notebook_cells(notebook_path)
-    for cell_index in cell_indices:
-        cell = cells[cell_index]
-        if cell.get("cell_type") != "code":
-            raise ValueError(
-                f"Requested cell {cell_index} is not executable in {notebook_path}"
-            )
-        exec("".join(cell.get("source", [])), namespace)
-    return namespace
+    module_name = "__notebook_smoke__"
+    module = types.ModuleType(module_name)
+    module.__file__ = str(notebook_path)
+    module.__dict__.update(
+        {
+            "__name__": module_name,
+            "__file__": str(notebook_path),
+            "IS_KAGGLE": False,
+            "USE_KAGGLE_GPU_FOR_TRAINING": False,
+            "KAGGLE_CUPY_PACKAGE": "cupy-cuda12x",
+        }
+    )
+    sys.modules[module_name] = module
+    try:
+        cells = _load_notebook_cells(notebook_path)
+        for cell_index in cell_indices:
+            cell = cells[cell_index]
+            if cell.get("cell_type") != "code":
+                raise ValueError(
+                    f"Requested cell {cell_index} is not executable in {notebook_path}"
+                )
+            exec("".join(cell.get("source", [])), module.__dict__)
+        return module.__dict__
+    finally:
+        sys.modules.pop(module_name, None)
 
 
 def test_sensor_calibration_notebook_tracks_fit_result_contract() -> None:
@@ -113,6 +127,50 @@ def test_sensor_calibration_notebook_tracks_fit_result_contract() -> None:
         in training_cell_source
     )
     assert "fit_result.result.objective_history" in inspection_cell_source
+
+
+def test_sensor_calibration_notebook_selected_cells_execute_without_training(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sensor notebook setup and corpus-preparation cells should execute cleanly.
+
+    This keeps the user-facing training notebook aligned with the library
+    through real execution of its import, workflow-resolution, and corpus
+    preparation path, while still avoiding the expensive fit cell.
+    """
+
+    notebook_path = _repo_root() / "notebooks" / "sensor_calibration.ipynb"
+    namespace = _execute_code_cells(
+        notebook_path=notebook_path,
+        cell_indices=(
+            _find_code_cell_index(
+                notebook_path,
+                'NOTEBOOK_WORKFLOW_CONFIG_DIRNAME = "config/notebook_workflow"',
+            ),
+            _find_code_cell_index(
+                notebook_path,
+                "from measurement_calibration import (",
+            ),
+            _find_code_cell_index(
+                notebook_path,
+                "preparation = prepare_calibration_corpus(",
+            ),
+        ),
+        monkeypatch=monkeypatch,
+    )
+
+    preparation = namespace["preparation"]
+    training_campaign_labels = namespace["TRAINING_CAMPAIGN_LABELS"]
+
+    assert len(preparation.prepared_campaigns) == len(training_campaign_labels)
+    assert preparation.campaigns_root.exists()
+    assert preparation.corpus.sensor_ids
+    for prepared_campaign in preparation.prepared_campaigns:
+        assert prepared_campaign.campaign.sensor_ids
+        assert len(prepared_campaign.campaign.sensor_ids) >= 2
+        assert set(prepared_campaign.alignment_pruned_sensor_ids).isdisjoint(
+            prepared_campaign.campaign.sensor_ids
+        )
 
 
 def test_deployment_notebook_selected_cells_execute_without_training(
