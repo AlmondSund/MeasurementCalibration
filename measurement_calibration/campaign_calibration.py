@@ -49,6 +49,7 @@ from .spectral_calibration import (
     fit_two_level_calibration,
     power_db_to_linear,
 )
+from .notebook_workflow_configuration import fingerprint_notebook_workflow_config
 
 
 DEFAULT_CONFIGURATION_CONDITIONAL_MODELS_DIR = (
@@ -504,6 +505,7 @@ def fit_and_save_calibration_corpus_model(
     sensor_reference_weight_by_id: Mapping[str, float] | None = None,
     extra_summary: Mapping[str, int | float] | None = None,
     parameters_filename: str = DEFAULT_ARTIFACT_PARAMETERS_FILENAME,
+    workflow_config_dir: Path | None = None,
 ) -> CalibrationCorpusFitResult:
     """Fit and persist one corpus-level configuration-conditional model.
 
@@ -529,6 +531,10 @@ def fit_and_save_calibration_corpus_model(
     parameters_filename:
         Simple ``.npz`` filename used for the serialized parameter archive
         inside ``output_dir``.
+    workflow_config_dir:
+        Optional notebook workflow configuration directory. When provided, the
+        saved artifact provenance stores a hash of the exact workflow files
+        that selected the training and testing campaigns.
 
     Returns
     -------
@@ -553,11 +559,17 @@ def fit_and_save_calibration_corpus_model(
     summary_payload = dict(extra_summary or {})
     summary_payload["fit_duration_s"] = fit_duration_s
     summary_payload["n_campaigns"] = len(preparation.prepared_campaigns)
+    workflow_config_fingerprint = (
+        None
+        if workflow_config_dir is None
+        else fingerprint_notebook_workflow_config(workflow_config_dir)
+    )
     artifact = save_two_level_calibration_artifact(
         output_dir=output_dir,
         result=result,
         extra_summary=summary_payload,
         parameters_filename=parameters_filename,
+        workflow_config_fingerprint=workflow_config_fingerprint,
     )
     return CalibrationCorpusFitResult(
         preparation=preparation,

@@ -9,6 +9,7 @@ import pytest
 from measurement_calibration.notebook_workflow_configuration import (
     DEFAULT_NOTEBOOK_WORKFLOW_CONFIG_DIR,
     build_notebook_workflow_model_label,
+    fingerprint_notebook_workflow_config,
     load_notebook_workflow_config,
 )
 
@@ -90,6 +91,25 @@ def test_build_notebook_workflow_model_label_tracks_configured_workflow() -> Non
     assert model_label == (
         "configured_corpus__lna16-vga0__measurementcalibration__exclude__node10__node9"
     )
+
+
+def test_fingerprint_notebook_workflow_config_changes_when_files_change(
+    tmp_path: Path,
+) -> None:
+    """The workflow fingerprint should track the exact config file contents."""
+
+    config_dir = tmp_path / "notebook_workflow"
+    _write_config_file(config_dir / "excluded_nodes.txt", "Node9\n")
+    _write_config_file(config_dir / "training_campaigns.txt", "campaign-a\n")
+    _write_config_file(config_dir / "testing_campaigns.txt", "campaign-b\n")
+
+    first_fingerprint = fingerprint_notebook_workflow_config(config_dir)
+    _write_config_file(config_dir / "testing_campaigns.txt", "campaign-c\n")
+    second_fingerprint = fingerprint_notebook_workflow_config(config_dir)
+
+    assert len(first_fingerprint) == 64
+    assert len(second_fingerprint) == 64
+    assert first_fingerprint != second_fingerprint
 
 
 def test_repository_notebook_workflow_config_matches_expected_campaign_split() -> None:

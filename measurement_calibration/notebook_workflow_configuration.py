@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 import re
 
@@ -158,6 +159,33 @@ def build_notebook_workflow_model_label(
     return model_label
 
 
+def fingerprint_notebook_workflow_config(
+    config_dir: Path = DEFAULT_NOTEBOOK_WORKFLOW_CONFIG_DIR,
+) -> str:
+    """Return a stable hash of the notebook workflow configuration directory.
+
+    The fingerprint captures both the filenames and the exact file contents so
+    a saved artifact can be traced back to the precise workflow lists that
+    selected its campaigns and global sensor exclusions.
+    """
+
+    resolved_config_dir = Path(config_dir)
+    required_paths = (
+        resolved_config_dir / _EXCLUDED_NODES_FILENAME,
+        resolved_config_dir / _TRAINING_CAMPAIGNS_FILENAME,
+        resolved_config_dir / _TESTING_CAMPAIGNS_FILENAME,
+    )
+    digest = hashlib.sha256()
+    for path in required_paths:
+        if not path.exists():
+            raise FileNotFoundError(f"Missing notebook workflow config file: {path}")
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def _read_configured_list(
     path: Path,
     *,
@@ -209,5 +237,6 @@ __all__ = [
     "DEFAULT_NOTEBOOK_WORKFLOW_CONFIG_DIR",
     "NotebookWorkflowConfig",
     "build_notebook_workflow_model_label",
+    "fingerprint_notebook_workflow_config",
     "load_notebook_workflow_config",
 ]

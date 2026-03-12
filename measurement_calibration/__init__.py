@@ -28,6 +28,7 @@ from .notebook_workflow_configuration import (
     DEFAULT_NOTEBOOK_WORKFLOW_CONFIG_DIR,
     NotebookWorkflowConfig,
     build_notebook_workflow_model_label,
+    fingerprint_notebook_workflow_config,
     load_notebook_workflow_config,
 )
 from .spectral_calibration import (
@@ -108,6 +109,7 @@ __all__ = [
     "build_corpus_calibration_output_dir",
     "calibrate_sensor_observations",
     "evaluate_persistent_calibration",
+    "fingerprint_notebook_workflow_config",
     "fit_and_save_calibration_corpus_model",
     "fit_two_level_calibration",
     "load_campaign_configuration",

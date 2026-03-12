@@ -20,6 +20,9 @@ from measurement_calibration.campaign_calibration import (
     prepare_calibration_corpus,
     resolve_global_excluded_sensor_ids_by_campaign,
 )
+from measurement_calibration.notebook_workflow_configuration import (
+    fingerprint_notebook_workflow_config,
+)
 from measurement_calibration.spectral_calibration import (
     FrequencyBasisConfig,
     PersistentModelConfig,
@@ -153,6 +156,8 @@ def test_prepare_calibration_corpus_and_fit_wrapper_write_artifact(
         distribution_histogram_bins=32,
         alignment_tolerance_ms=80,
     )
+    workflow_config_dir = tmp_path / "config" / "notebook_workflow"
+    _write_workflow_config_fixture(workflow_config_dir)
     output_dir = build_corpus_calibration_output_dir(
         "synthetic-corpus",
         models_root=tmp_path / "models",
@@ -186,6 +191,7 @@ def test_prepare_calibration_corpus_and_fit_wrapper_write_artifact(
             random_seed=1,
         ),
         parameters_filename=DEFAULT_PRODUCTION_PARAMETERS_FILENAME,
+        workflow_config_dir=workflow_config_dir,
     )
     loaded = load_two_level_calibration_artifact(output_dir)
 
@@ -199,6 +205,9 @@ def test_prepare_calibration_corpus_and_fit_wrapper_write_artifact(
     assert loaded.parameters_path.name == DEFAULT_PRODUCTION_PARAMETERS_FILENAME
     assert loaded.manifest["training_summary"]["n_campaigns"] == 2
     assert len(loaded.result.campaign_states) == 2
+    assert loaded.manifest["provenance"]["workflow_config_fingerprint"] == (
+        fingerprint_notebook_workflow_config(workflow_config_dir)
+    )
 
 
 def test_resolve_global_excluded_sensor_ids_by_campaign_intersects_sensor_rosters(
@@ -371,3 +380,18 @@ def _write_sensor_csv(
         writer = csv.DictWriter(csv_file, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _write_workflow_config_fixture(config_dir: Path) -> None:
+    """Write one minimal notebook workflow configuration directory."""
+
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "excluded_nodes.txt").write_text("Node9\n", encoding="utf-8")
+    (config_dir / "training_campaigns.txt").write_text(
+        "campaign-a\ncampaign-b\n",
+        encoding="utf-8",
+    )
+    (config_dir / "testing_campaigns.txt").write_text(
+        "test-calibration\n",
+        encoding="utf-8",
+    )

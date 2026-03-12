@@ -184,6 +184,7 @@ def test_save_and_load_two_level_calibration_artifact_with_custom_npz_name(
         output_dir=tmp_path / "artifact",
         result=result,
         parameters_filename=DEFAULT_PRODUCTION_PARAMETERS_FILENAME,
+        workflow_config_fingerprint="workflow-sha256",
     )
     loaded = load_two_level_calibration_artifact(artifact.output_dir)
 
@@ -191,6 +192,10 @@ def test_save_and_load_two_level_calibration_artifact_with_custom_npz_name(
     assert artifact.parameters_path.exists()
     assert loaded.manifest["parameters_file"] == DEFAULT_PRODUCTION_PARAMETERS_FILENAME
     assert loaded.parameters_path.name == DEFAULT_PRODUCTION_PARAMETERS_FILENAME
+    assert (
+        loaded.manifest["provenance"]["workflow_config_fingerprint"]
+        == "workflow-sha256"
+    )
 
 
 def test_archive_artifact_directory_moves_existing_bundle_into_archive_root(

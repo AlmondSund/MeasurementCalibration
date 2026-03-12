@@ -70,6 +70,7 @@ def save_two_level_calibration_artifact(
     result: TwoLevelCalibrationResult,  # Fitted calibration model
     extra_summary: dict[str, int | float] | None = None,
     parameters_filename: str = DEFAULT_ARTIFACT_PARAMETERS_FILENAME,
+    workflow_config_fingerprint: str | None = None,
 ) -> SavedCalibrationArtifact:
     """Persist a fitted two-level calibration model to disk.
 
@@ -91,6 +92,9 @@ def save_two_level_calibration_artifact(
     parameters_filename:
         Simple ``.npz`` filename used for the serialized parameter archive
         inside ``output_dir``.
+    workflow_config_fingerprint:
+        Optional fingerprint of the notebook workflow configuration directory
+        that selected the training and testing campaigns.
 
     Side Effects
     ------------
@@ -120,6 +124,7 @@ def save_two_level_calibration_artifact(
         parameters_path=parameters_path,
         sensor_summary_path=sensor_summary_path,
         extra_summary=extra_summary,
+        workflow_config_fingerprint=workflow_config_fingerprint,
     )
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
@@ -470,6 +475,7 @@ def _build_artifact_manifest(
     parameters_path: Path,
     sensor_summary_path: Path,
     extra_summary: dict[str, int | float] | None,
+    workflow_config_fingerprint: str | None,
 ) -> dict[str, Any]:
     """Build the JSON manifest dictionary for one saved artifact."""
 
@@ -497,6 +503,7 @@ def _build_artifact_manifest(
             result=result,
             parameters_path=parameters_path,
             sensor_summary_path=sensor_summary_path,
+            workflow_config_fingerprint=workflow_config_fingerprint,
         ),
         "campaigns": [
             _campaign_manifest_entry(campaign_state)
@@ -543,10 +550,11 @@ def _build_provenance_manifest(
     result: TwoLevelCalibrationResult,
     parameters_path: Path,
     sensor_summary_path: Path,
+    workflow_config_fingerprint: str | None,
 ) -> dict[str, Any]:
     """Build reproducibility-oriented provenance metadata for the manifest."""
 
-    return {
+    provenance_manifest = {
         "python_version": sys.version.split()[0],
         "numpy_version": np.__version__,
         "scipy_version": scipy.__version__,
@@ -559,6 +567,11 @@ def _build_provenance_manifest(
         "parameters_sha256": _sha256_file(parameters_path),
         "sensor_summary_sha256": _sha256_file(sensor_summary_path),
     }
+    if workflow_config_fingerprint is not None:
+        provenance_manifest["workflow_config_fingerprint"] = str(
+            workflow_config_fingerprint
+        )
+    return provenance_manifest
 
 
 def _safe_git_command(*arguments: str) -> str | None:
