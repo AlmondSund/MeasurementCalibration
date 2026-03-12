@@ -157,5 +157,6 @@ def test_deployment_notebook_selected_cells_execute_without_training(
     assert artifact.parameters_path.exists()
     assert curves.trust_diagnostics.frequency_extrapolation_detected is False
     assert curves.trust_diagnostics.configuration_out_of_distribution is False
+    assert curves.trust_diagnostics.overall_out_of_distribution is False
     assert deployment.uncertainty_scope == "observation_noise_only"
     assert deployment.calibrated_power.shape == raw_power.shape

@@ -39,7 +39,7 @@ def test_save_and_load_two_level_calibration_artifact_round_trip(
     )
     loaded = load_two_level_calibration_artifact(artifact.output_dir)
 
-    assert loaded.manifest["schema_version"] == 2
+    assert loaded.manifest["schema_version"] == 3
     assert (
         loaded.manifest["artifact_type"]
         == "configuration_conditional_calibration_model"
@@ -104,6 +104,23 @@ def test_save_and_load_two_level_calibration_artifact_round_trip(
     )
     assert loaded.result.effective_variance_floor_power2 == pytest.approx(
         result.effective_variance_floor_power2
+    )
+    assert loaded.result.configuration_mahalanobis_precision is not None
+    assert result.configuration_mahalanobis_precision is not None
+    assert loaded.result.configuration_mahalanobis_threshold is not None
+    assert result.configuration_mahalanobis_threshold is not None
+    assert loaded.result.configuration_mahalanobis_rank is not None
+    assert result.configuration_mahalanobis_rank is not None
+    assert np.allclose(
+        loaded.result.configuration_mahalanobis_precision,
+        result.configuration_mahalanobis_precision,
+    )
+    assert loaded.result.configuration_mahalanobis_threshold == pytest.approx(
+        result.configuration_mahalanobis_threshold
+    )
+    assert (
+        loaded.result.configuration_mahalanobis_rank
+        == result.configuration_mahalanobis_rank
     )
     assert np.allclose(loaded.result.sensor_embeddings, result.sensor_embeddings)
     assert np.allclose(

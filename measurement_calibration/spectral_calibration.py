@@ -25,6 +25,7 @@ import math
 import numpy as np
 from numpy.typing import NDArray
 from scipy.interpolate import BSpline
+from scipy.stats import chi2
 
 
 FloatArray = NDArray[np.float64]
@@ -520,6 +521,12 @@ class DeploymentTrustDiagnostics:
     configuration_out_of_distribution:
         Whether the deployment configuration falls outside the stored training
         envelope on at least one feature.
+    configuration_geometry_support_available:
+        Whether a covariance-aware configuration support model was stored in
+        the fitted artifact.
+    configuration_geometric_out_of_distribution:
+        Whether the deployment configuration is far from the training
+        configuration manifold under the stored Mahalanobis model.
     out_of_range_feature_names:
         Feature names whose raw values fall outside the training envelope.
     standardized_configuration:
@@ -529,6 +536,18 @@ class DeploymentTrustDiagnostics:
     max_abs_standardized_feature:
         Largest absolute standardized feature magnitude under the training
         mean/scale normalization.
+    configuration_mahalanobis_distance:
+        Covariance-aware distance of the deployment configuration from the
+        training manifold in standardized feature space.
+    configuration_mahalanobis_threshold:
+        Stored deployment threshold for the Mahalanobis distance. Distances
+        above this threshold are flagged as geometric OOD.
+    configuration_mahalanobis_tail_probability:
+        Upper-tail probability of the squared Mahalanobis distance under the
+        stored Gaussian approximation. Smaller values indicate lower support.
+    overall_out_of_distribution:
+        Combined deployment OOD flag across both min/max envelopes and the
+        covariance-aware geometry model.
     """
 
     frequency_support_hz: tuple[float, float]
@@ -538,9 +557,15 @@ class DeploymentTrustDiagnostics:
     frequency_extrapolation_detected: bool
     configuration_support_available: bool
     configuration_out_of_distribution: bool
+    configuration_geometry_support_available: bool
+    configuration_geometric_out_of_distribution: bool
     out_of_range_feature_names: tuple[str, ...]
     standardized_configuration: tuple[float, ...]
     max_abs_standardized_feature: float
+    configuration_mahalanobis_distance: float | None = None
+    configuration_mahalanobis_threshold: float | None = None
+    configuration_mahalanobis_tail_probability: float | None = None
+    overall_out_of_distribution: bool = False
 
 
 @dataclass(frozen=True)
@@ -711,6 +736,17 @@ class TwoLevelCalibrationResult:
     configuration_feature_min, configuration_feature_max:
         Optional raw-feature envelopes observed during offline training. These
         are used to detect deployment-time configuration OOD conditions.
+    configuration_mahalanobis_precision:
+        Optional precision matrix of the standardized training configuration
+        vectors. When available, deployment can score how far a requested
+        configuration lies from the training manifold instead of relying only
+        on axis-aligned feature envelopes.
+    configuration_mahalanobis_threshold:
+        Deployment threshold for the Mahalanobis distance. Distances above this
+        value are flagged as covariance-aware configuration OOD.
+    configuration_mahalanobis_rank:
+        Effective rank used by the covariance-aware configuration support
+        model.
     fit_diagnostics:
         Summary of best-iterate selection and outer-loop termination.
     """
@@ -738,6 +774,9 @@ class TwoLevelCalibrationResult:
     effective_variance_floor_power2: float | None = None
     configuration_feature_min: FloatArray | None = None
     configuration_feature_max: FloatArray | None = None
+    configuration_mahalanobis_precision: FloatArray | None = None
+    configuration_mahalanobis_threshold: float | None = None
+    configuration_mahalanobis_rank: int | None = None
     fit_diagnostics: FitConvergenceDiagnostics = field(
         default_factory=lambda: FitConvergenceDiagnostics(
             selected_outer_iteration=0,
@@ -965,6 +1004,16 @@ def fit_two_level_calibration(
         configuration_feature_scale > _EPSILON,
         configuration_feature_scale,
         1.0,
+    )
+    standardized_configuration_features = (
+        raw_configuration_features - configuration_feature_mean
+    ) / configuration_feature_scale
+    (
+        configuration_mahalanobis_precision,
+        configuration_mahalanobis_threshold,
+        configuration_mahalanobis_rank,
+    ) = _configuration_geometry_support(
+        standardized_configuration_features=standardized_configuration_features
     )
 
     frequency_min_hz = float(
@@ -1250,6 +1299,12 @@ def fit_two_level_calibration(
         configuration_feature_max=np.asarray(
             configuration_feature_max, dtype=np.float64
         ),
+        configuration_mahalanobis_precision=np.asarray(
+            configuration_mahalanobis_precision,
+            dtype=np.float64,
+        ),
+        configuration_mahalanobis_threshold=float(configuration_mahalanobis_threshold),
+        configuration_mahalanobis_rank=int(configuration_mahalanobis_rank),
         frequency_min_hz=frequency_min_hz,
         frequency_max_hz=frequency_max_hz,
         sensor_embeddings=np.asarray(
@@ -1336,13 +1391,11 @@ def evaluate_persistent_calibration(
             "Pass allow_frequency_extrapolation=True to evaluate with explicit "
             "boundary clamping."
         )
-    if (
-        trust_diagnostics.configuration_out_of_distribution
-        and not allow_configuration_ood
-    ):
+    if trust_diagnostics.overall_out_of_distribution and not allow_configuration_ood:
         raise ValueError(
             "Deployment configuration lies outside the stored training envelope for "
-            f"features {trust_diagnostics.out_of_range_feature_names}."
+            f"features {trust_diagnostics.out_of_range_feature_names}. "
+            f"Mahalanobis distance={trust_diagnostics.configuration_mahalanobis_distance}."
         )
 
     forward_cache = _forward_external_configuration(
@@ -1627,6 +1680,22 @@ def _deployment_trust_diagnostics(
         ]
         configuration_out_of_distribution = bool(np.any(out_of_range_mask))
 
+    (
+        configuration_geometry_support_available,
+        configuration_mahalanobis_distance,
+        configuration_mahalanobis_threshold,
+        configuration_mahalanobis_tail_probability,
+        configuration_geometric_out_of_distribution,
+    ) = _configuration_geometry_diagnostics(
+        standardized_configuration=standardized_configuration,
+        precision_matrix=result.configuration_mahalanobis_precision,
+        threshold=result.configuration_mahalanobis_threshold,
+        effective_rank=result.configuration_mahalanobis_rank,
+    )
+    overall_out_of_distribution = bool(
+        configuration_out_of_distribution or configuration_geometric_out_of_distribution
+    )
+
     return DeploymentTrustDiagnostics(
         frequency_support_hz=(
             float(result.frequency_min_hz),
@@ -1641,12 +1710,128 @@ def _deployment_trust_diagnostics(
         frequency_extrapolation_detected=frequency_extrapolation_detected,
         configuration_support_available=configuration_support_available,
         configuration_out_of_distribution=configuration_out_of_distribution,
+        configuration_geometry_support_available=(
+            configuration_geometry_support_available
+        ),
+        configuration_geometric_out_of_distribution=(
+            configuration_geometric_out_of_distribution
+        ),
         out_of_range_feature_names=tuple(out_of_range_feature_names),
         standardized_configuration=tuple(
             float(value) for value in standardized_configuration
         ),
         max_abs_standardized_feature=float(np.max(np.abs(standardized_configuration))),
+        configuration_mahalanobis_distance=configuration_mahalanobis_distance,
+        configuration_mahalanobis_threshold=configuration_mahalanobis_threshold,
+        configuration_mahalanobis_tail_probability=(
+            configuration_mahalanobis_tail_probability
+        ),
+        overall_out_of_distribution=overall_out_of_distribution,
     )
+
+
+def _configuration_geometry_support(
+    standardized_configuration_features: FloatArray,
+) -> tuple[FloatArray, float, int]:
+    """Build a regularized Mahalanobis support model for configurations.
+
+    The training corpus often contains only a handful of campaigns, so the
+    configuration covariance can be rank deficient. A small diagonal ridge and
+    a pseudo-inverse keep the resulting geometry model numerically stable while
+    still exposing when a deployment point is far from the observed
+    configuration manifold.
+    """
+
+    standardized_configuration_features = np.asarray(
+        standardized_configuration_features,
+        dtype=np.float64,
+    )
+    if standardized_configuration_features.ndim != 2:
+        raise ValueError(
+            "standardized_configuration_features must have shape "
+            "(n_campaigns, n_features)"
+        )
+    if standardized_configuration_features.shape[0] < 1:
+        raise ValueError("At least one standardized configuration is required")
+
+    feature_dim = standardized_configuration_features.shape[1]
+    if standardized_configuration_features.shape[0] < 2:
+        precision_matrix = np.eye(feature_dim, dtype=np.float64)
+        threshold = float(np.sqrt(chi2.ppf(0.99, df=feature_dim)))
+        return precision_matrix, threshold, feature_dim
+
+    covariance_matrix = np.cov(
+        standardized_configuration_features,
+        rowvar=False,
+        ddof=1,
+    )
+    ridge_scale = max(float(np.trace(covariance_matrix)) / feature_dim, 1.0)
+    regularized_covariance = covariance_matrix + 1.0e-6 * ridge_scale * np.eye(
+        feature_dim,
+        dtype=np.float64,
+    )
+    precision_matrix = np.linalg.pinv(regularized_covariance, hermitian=True)
+    effective_rank = int(np.linalg.matrix_rank(regularized_covariance))
+    training_distances = np.asarray(
+        [
+            _mahalanobis_distance(
+                vector=configuration_vector,
+                precision_matrix=precision_matrix,
+            )
+            for configuration_vector in standardized_configuration_features
+        ],
+        dtype=np.float64,
+    )
+    chi2_threshold = float(np.sqrt(chi2.ppf(0.99, df=max(effective_rank, 1))))
+    threshold = float(max(float(np.max(training_distances)), chi2_threshold))
+    return precision_matrix, threshold, max(effective_rank, 1)
+
+
+def _configuration_geometry_diagnostics(
+    standardized_configuration: FloatArray,
+    precision_matrix: FloatArray | None,
+    threshold: float | None,
+    effective_rank: int | None,
+) -> tuple[bool, float | None, float | None, float | None, bool]:
+    """Evaluate covariance-aware deployment support diagnostics."""
+
+    if precision_matrix is None or threshold is None or effective_rank is None:
+        return False, None, None, None, False
+
+    mahalanobis_distance = _mahalanobis_distance(
+        vector=standardized_configuration,
+        precision_matrix=precision_matrix,
+    )
+    tail_probability = float(
+        chi2.sf(mahalanobis_distance**2, df=max(int(effective_rank), 1))
+    )
+    return (
+        True,
+        mahalanobis_distance,
+        float(threshold),
+        tail_probability,
+        bool(mahalanobis_distance > threshold),
+    )
+
+
+def _mahalanobis_distance(
+    vector: FloatArray,
+    precision_matrix: FloatArray,
+) -> float:
+    """Return the Mahalanobis distance of one vector under ``precision_matrix``."""
+
+    vector = np.asarray(vector, dtype=np.float64)
+    precision_matrix = np.asarray(precision_matrix, dtype=np.float64)
+    if vector.ndim != 1:
+        raise ValueError("vector must have shape (n_features,)")
+    if precision_matrix.shape != (vector.size, vector.size):
+        raise ValueError("precision_matrix must have shape (n_features, n_features)")
+    squared_distance = float(vector @ precision_matrix @ vector)
+    if squared_distance < 0.0 and squared_distance > -1.0e-10:
+        squared_distance = 0.0
+    if squared_distance < 0.0:
+        raise FloatingPointError("Mahalanobis squared distance became negative")
+    return float(math.sqrt(squared_distance))
 
 
 def _build_spline_basis(

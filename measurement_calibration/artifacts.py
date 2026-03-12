@@ -35,7 +35,7 @@ from .spectral_calibration import (
 )
 
 
-MODEL_SCHEMA_VERSION = 2
+MODEL_SCHEMA_VERSION = 3
 DEFAULT_ARTIFACT_PARAMETERS_FILENAME = "calibration_parameters.npz"
 DEFAULT_PRODUCTION_ARTIFACT_DIR = Path("models") / "production"
 DEFAULT_ARCHIVED_ARTIFACTS_DIR = Path("models") / "archive"
@@ -152,10 +152,10 @@ def load_two_level_calibration_artifact(
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     schema_version = int(manifest["schema_version"])
-    if schema_version != MODEL_SCHEMA_VERSION:
+    if schema_version not in {2, MODEL_SCHEMA_VERSION}:
         raise ValueError(
             "Unsupported calibration artifact schema version: "
-            f"{schema_version}. Expected {MODEL_SCHEMA_VERSION}."
+            f"{schema_version}. Expected one of {(2, MODEL_SCHEMA_VERSION)}."
         )
 
     parameters_path = output_dir / str(manifest["parameters_file"])
@@ -196,6 +196,24 @@ def load_two_level_calibration_artifact(
                 None
                 if "configuration_feature_max" not in arrays
                 else np.asarray(arrays["configuration_feature_max"], dtype=np.float64)
+            ),
+            configuration_mahalanobis_precision=(
+                None
+                if "configuration_mahalanobis_precision" not in arrays
+                else np.asarray(
+                    arrays["configuration_mahalanobis_precision"],
+                    dtype=np.float64,
+                )
+            ),
+            configuration_mahalanobis_threshold=(
+                None
+                if "configuration_mahalanobis_threshold" not in arrays
+                else float(arrays["configuration_mahalanobis_threshold"][0])
+            ),
+            configuration_mahalanobis_rank=(
+                None
+                if "configuration_mahalanobis_rank" not in arrays
+                else int(arrays["configuration_mahalanobis_rank"][0])
             ),
             frequency_min_hz=float(arrays["frequency_min_hz"][0]),
             frequency_max_hz=float(arrays["frequency_max_hz"][0]),
@@ -426,6 +444,20 @@ def _build_parameter_archive_payload(
     if result.configuration_feature_max is not None:
         payload["configuration_feature_max"] = np.asarray(
             result.configuration_feature_max, dtype=np.float64
+        )
+    if result.configuration_mahalanobis_precision is not None:
+        payload["configuration_mahalanobis_precision"] = np.asarray(
+            result.configuration_mahalanobis_precision, dtype=np.float64
+        )
+    if result.configuration_mahalanobis_threshold is not None:
+        payload["configuration_mahalanobis_threshold"] = np.asarray(
+            [result.configuration_mahalanobis_threshold],
+            dtype=np.float64,
+        )
+    if result.configuration_mahalanobis_rank is not None:
+        payload["configuration_mahalanobis_rank"] = np.asarray(
+            [result.configuration_mahalanobis_rank],
+            dtype=np.int64,
         )
     for campaign_index, campaign_state in enumerate(result.campaign_states):
         payload[f"campaign_{campaign_index}_sensor_ids"] = np.asarray(

@@ -534,7 +534,62 @@ def test_evaluate_persistent_calibration_flags_configuration_ood() -> None:
 
     assert curves.trust_diagnostics.configuration_support_available is True
     assert curves.trust_diagnostics.configuration_out_of_distribution is True
+    assert curves.trust_diagnostics.overall_out_of_distribution is True
     assert "central_frequency_hz" in curves.trust_diagnostics.out_of_range_feature_names
     assert curves.trust_diagnostics.max_abs_standardized_feature == pytest.approx(
         max(abs(value) for value in curves.trust_diagnostics.standardized_configuration)
     )
+
+
+def test_evaluate_persistent_calibration_flags_geometric_configuration_ood() -> None:
+    """Deployment diagnostics should catch within-box but off-manifold inputs."""
+
+    fixture = build_synthetic_two_level_fixture()
+    result = fit_two_level_calibration(
+        corpus=fixture.corpus,
+        basis_config=fixture.basis_config,
+        model_config=fixture.model_config,
+        fit_config=fixture.fit_config,
+    )
+    geometric_ood_configuration = CampaignConfiguration(
+        central_frequency_hz=98.0e6,
+        span_hz=16.0e6,
+        resolution_bandwidth_hz=20.0e3,
+        lna_gain_db=0.0,
+        vga_gain_db=60.0,
+        acquisition_interval_s=180.0,
+        antenna_amplifier_enabled=True,
+    )
+
+    with pytest.raises(ValueError, match="Mahalanobis distance"):
+        evaluate_persistent_calibration(
+            result=result,
+            sensor_id=fixture.deployment_sensor_id,
+            configuration=geometric_ood_configuration,
+            frequency_hz=fixture.deployment_frequency_hz,
+            allow_configuration_ood=False,
+        )
+
+    curves = evaluate_persistent_calibration(
+        result=result,
+        sensor_id=fixture.deployment_sensor_id,
+        configuration=geometric_ood_configuration,
+        frequency_hz=fixture.deployment_frequency_hz,
+        allow_configuration_ood=True,
+    )
+
+    assert curves.trust_diagnostics.configuration_support_available is True
+    assert curves.trust_diagnostics.configuration_out_of_distribution is False
+    assert curves.trust_diagnostics.configuration_geometry_support_available is True
+    assert curves.trust_diagnostics.configuration_geometric_out_of_distribution is True
+    assert curves.trust_diagnostics.configuration_mahalanobis_distance is not None
+    assert curves.trust_diagnostics.configuration_mahalanobis_threshold is not None
+    assert (
+        curves.trust_diagnostics.configuration_mahalanobis_tail_probability is not None
+    )
+    assert (
+        curves.trust_diagnostics.configuration_mahalanobis_distance
+        > curves.trust_diagnostics.configuration_mahalanobis_threshold
+    )
+    assert curves.trust_diagnostics.configuration_mahalanobis_tail_probability < 0.05
+    assert curves.trust_diagnostics.overall_out_of_distribution is True

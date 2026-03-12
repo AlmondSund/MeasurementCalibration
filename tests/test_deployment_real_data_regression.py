@@ -90,7 +90,12 @@ def test_checked_in_production_artifact_calibrates_real_deployment_campaign() ->
         assert curves.trust_diagnostics.frequency_extrapolation_detected is False
         assert curves.trust_diagnostics.configuration_support_available is True
         assert curves.trust_diagnostics.configuration_out_of_distribution is False
+        assert curves.trust_diagnostics.overall_out_of_distribution is False
         assert len(curves.trust_diagnostics.standardized_configuration) == 7
+        assert (
+            curves.trust_diagnostics.configuration_geometry_support_available is False
+        )
+        assert curves.trust_diagnostics.configuration_mahalanobis_distance is None
         assert deployment.calibrated_power.shape == raw_power.shape
         assert deployment.propagated_variance_power2.shape == raw_power.shape
         assert deployment.uncertainty_scope == "observation_noise_only"
