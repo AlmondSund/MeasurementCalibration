@@ -7,8 +7,10 @@ from typing import Any
 import numpy as np
 import pytest
 
+import measurement_calibration.spectral_calibration as spectral_calibration_core
 from measurement_calibration.spectral_calibration import (
     CampaignConfiguration,
+    _configuration_geometry_support,
     _accumulate_campaign_objective_and_gradients,
     _forward_campaign,
     _initialize_campaign_states,
@@ -593,3 +595,38 @@ def test_evaluate_persistent_calibration_flags_geometric_configuration_ood() -> 
     )
     assert curves.trust_diagnostics.configuration_mahalanobis_tail_probability < 0.05
     assert curves.trust_diagnostics.overall_out_of_distribution is True
+
+
+def test_configuration_geometry_support_falls_back_without_hermitian_keyword(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Geometry support should tolerate backends whose ``pinv`` lacks ``hermitian``."""
+
+    original_pinv = spectral_calibration_core.np.linalg.pinv
+
+    def pinv_without_hermitian(*args: Any, **kwargs: Any) -> np.ndarray:
+        if "hermitian" in kwargs:
+            raise TypeError("pinv() got an unexpected keyword argument 'hermitian'")
+        return original_pinv(*args, **kwargs)
+
+    monkeypatch.setattr(
+        spectral_calibration_core.np.linalg,
+        "pinv",
+        pinv_without_hermitian,
+    )
+
+    precision_matrix, threshold, effective_rank = _configuration_geometry_support(
+        standardized_configuration_features=np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, -0.5, 0.25],
+                [-0.75, 0.5, -0.1],
+            ],
+            dtype=np.float64,
+        )
+    )
+
+    assert precision_matrix.shape == (3, 3)
+    assert np.all(np.isfinite(precision_matrix))
+    assert threshold > 0.0
+    assert effective_rank >= 1

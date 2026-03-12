@@ -1770,7 +1770,10 @@ def _configuration_geometry_support(
         feature_dim,
         dtype=np.float64,
     )
-    precision_matrix = np.linalg.pinv(regularized_covariance, hermitian=True)
+    precision_matrix = _pseudo_inverse(
+        regularized_covariance,
+        assume_hermitian=True,
+    )
     effective_rank = int(np.linalg.matrix_rank(regularized_covariance))
     training_distances = np.asarray(
         [
@@ -1785,6 +1788,28 @@ def _configuration_geometry_support(
     chi2_threshold = float(np.sqrt(chi2.ppf(0.99, df=max(effective_rank, 1))))
     threshold = float(max(float(np.max(training_distances)), chi2_threshold))
     return precision_matrix, threshold, max(effective_rank, 1)
+
+
+def _pseudo_inverse(
+    matrix: FloatArray,
+    *,
+    assume_hermitian: bool = False,
+) -> FloatArray:
+    """Compute a backend-tolerant pseudo-inverse.
+
+    NumPy exposes ``hermitian=`` on ``linalg.pinv`` while CuPy currently does
+    not. The calibration code only uses the Hermitian hint as an optimization
+    for symmetric covariance-like matrices, so it is safe to retry without the
+    keyword when the active linear-algebra backend rejects it.
+    """
+
+    if not assume_hermitian:
+        return np.asarray(np.linalg.pinv(matrix), dtype=np.float64)
+
+    try:
+        return np.asarray(np.linalg.pinv(matrix, hermitian=True), dtype=np.float64)
+    except TypeError:
+        return np.asarray(np.linalg.pinv(matrix), dtype=np.float64)
 
 
 def _configuration_geometry_diagnostics(
