@@ -144,6 +144,29 @@ def _single_campaign_objective(
     )
 
 
+def _max_gain_edge_jump_ratio(gain_power: np.ndarray) -> float:
+    """Recompute the gain-edge instability diagnostic used by the core."""
+
+    gain_jumps = np.abs(np.diff(np.asarray(gain_power, dtype=np.float64), axis=1))
+    if gain_jumps.size == 0:
+        return 0.0
+    boundary_jumps = np.concatenate(
+        [
+            gain_jumps[:, :1].reshape(-1),
+            gain_jumps[:, -1:].reshape(-1),
+        ]
+    )
+    if gain_jumps.shape[1] > 2:
+        interior_jumps = gain_jumps[:, 1:-1].reshape(-1)
+    else:
+        interior_jumps = gain_jumps.reshape(-1)
+    if interior_jumps.size == 0:
+        return 0.0
+    return float(
+        np.max(boundary_jumps) / max(float(np.median(interior_jumps)), 1.0e-12)
+    )
+
+
 def test_fit_two_level_calibration_tracks_campaign_parameters() -> None:
     """Offline fitting should beat naive campaign baselines on synthetic data."""
 
@@ -183,12 +206,42 @@ def test_fit_two_level_calibration_tracks_campaign_parameters() -> None:
         )
         >= 0.0
     )
+    objective_history = np.asarray(result.objective_history, dtype=np.float64)
+    objective_deltas = np.diff(objective_history)
+    expected_n_objective_increases = int(np.sum(objective_deltas > 0.0))
+    assert (
+        result.fit_diagnostics.n_objective_increases == expected_n_objective_increases
+    )
+    if expected_n_objective_increases == 0:
+        assert result.fit_diagnostics.max_objective_increase_ratio == pytest.approx(0.0)
+    else:
+        expected_max_objective_increase_ratio = float(
+            np.max(
+                objective_deltas[objective_deltas > 0.0]
+                / np.maximum(
+                    np.abs(objective_history[:-1][objective_deltas > 0.0]), 1.0
+                )
+            )
+        )
+        assert result.fit_diagnostics.max_objective_increase_ratio == pytest.approx(
+            expected_max_objective_increase_ratio
+        )
     assert result.effective_variance_floor_power2 is not None
     assert result.effective_variance_floor_power2 > fixture.fit_config.sigma_min
 
     gain_improvement_count = 0
     floor_improvement_count = 0
+    campaign_by_label = {
+        campaign.campaign_label: campaign for campaign in fixture.corpus.campaigns
+    }
+    expected_campaign_objective_fraction = max(
+        float(campaign_state.objective_value)
+        for campaign_state in result.campaign_states
+    ) / max(abs(result.fit_diagnostics.selected_objective_value), 1.0e-12)
+    expected_max_residual_variance_ratio = 0.0
+    expected_max_gain_edge_jump_ratio = 0.0
     for campaign_state in result.campaign_states:
+        raw_campaign = campaign_by_label[campaign_state.campaign_label]
         true_gain = fixture.true_gain_by_campaign[campaign_state.campaign_label]
         true_floor = fixture.true_floor_by_campaign[campaign_state.campaign_label]
         true_variance = fixture.true_variance_by_campaign[campaign_state.campaign_label]
@@ -216,12 +269,37 @@ def test_fit_two_level_calibration_tracks_campaign_parameters() -> None:
         assert np.min(campaign_state.residual_variance_power2) >= (
             result.effective_variance_floor_power2 - 1.0e-12
         )
+        expected_max_residual_variance_ratio = max(
+            expected_max_residual_variance_ratio,
+            float(np.max(campaign_state.residual_variance_power2))
+            / max(float(np.var(raw_campaign.observations_power)), 1.0e-12),
+        )
+        expected_max_gain_edge_jump_ratio = max(
+            expected_max_gain_edge_jump_ratio,
+            _max_gain_edge_jump_ratio(campaign_state.gain_power),
+        )
         gain_improvement_count += int(fitted_gain_rmse < baseline_gain_rmse)
         floor_improvement_count += int(fitted_floor_rmse < baseline_floor_rmse)
         assert fitted_variance_rmse < 2.0 * baseline_variance_rmse
 
     assert gain_improvement_count >= 2
     assert floor_improvement_count == len(result.campaign_states)
+    expected_max_embedding_norm = float(
+        np.max(np.linalg.norm(result.sensor_embeddings, axis=1))
+    )
+    assert result.fit_diagnostics.final_max_sensor_embedding_norm == pytest.approx(
+        expected_max_embedding_norm
+    )
+    assert (
+        result.fit_diagnostics.final_max_campaign_objective_fraction
+        == pytest.approx(expected_campaign_objective_fraction)
+    )
+    assert result.fit_diagnostics.final_max_residual_variance_ratio == pytest.approx(
+        expected_max_residual_variance_ratio
+    )
+    assert result.fit_diagnostics.final_max_gain_edge_jump_ratio == pytest.approx(
+        expected_max_gain_edge_jump_ratio
+    )
 
 
 @pytest.mark.parametrize(

@@ -643,6 +643,7 @@ def _campaign_manifest_entry(
 
     return {
         "campaign_label": campaign_state.campaign_label,
+        "campaign_fingerprint": _campaign_fingerprint(campaign_state),
         "sensor_ids": list(campaign_state.sensor_ids),
         "n_acquisitions": int(campaign_state.latent_spectra_power.shape[0]),
         "n_frequencies": int(campaign_state.frequency_hz.size),
@@ -650,6 +651,28 @@ def _campaign_manifest_entry(
         "configuration": asdict(campaign_state.configuration),
         "objective_value": float(campaign_state.objective_value),
     }
+
+
+def _campaign_fingerprint(
+    campaign_state: CampaignCalibrationState,
+) -> str:
+    """Build a stable fingerprint for one retained training campaign."""
+
+    fingerprint_payload = {
+        "campaign_label": campaign_state.campaign_label,
+        "sensor_ids": list(campaign_state.sensor_ids),
+        "frequency_hz": [
+            float(value) for value in np.asarray(campaign_state.frequency_hz)
+        ],
+        "configuration": asdict(campaign_state.configuration),
+        "reliable_sensor_id": campaign_state.reliable_sensor_id,
+    }
+    digest = hashlib.sha256(
+        json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    )
+    return digest.hexdigest()
 
 
 def _load_fit_diagnostics(
@@ -685,6 +708,36 @@ def _load_fit_diagnostics(
                     (),
                 )
             ),
+            n_objective_increases=int(
+                fit_diagnostics_payload.get("n_objective_increases", 0)
+            ),
+            max_objective_increase_ratio=float(
+                fit_diagnostics_payload.get("max_objective_increase_ratio", 0.0)
+            ),
+            final_max_sensor_embedding_norm=float(
+                fit_diagnostics_payload.get(
+                    "final_max_sensor_embedding_norm",
+                    float("nan"),
+                )
+            ),
+            final_max_campaign_objective_fraction=float(
+                fit_diagnostics_payload.get(
+                    "final_max_campaign_objective_fraction",
+                    float("nan"),
+                )
+            ),
+            final_max_residual_variance_ratio=float(
+                fit_diagnostics_payload.get(
+                    "final_max_residual_variance_ratio",
+                    float("nan"),
+                )
+            ),
+            final_max_gain_edge_jump_ratio=float(
+                fit_diagnostics_payload.get(
+                    "final_max_gain_edge_jump_ratio",
+                    float("nan"),
+                )
+            ),
         )
 
     if objective_history.size == 0:
@@ -697,9 +750,27 @@ def _load_fit_diagnostics(
             termination_reason="loaded_without_diagnostics",
             selected_from_best_iterate=False,
             max_gradient_norm_by_outer_iteration=(),
+            n_objective_increases=0,
+            max_objective_increase_ratio=0.0,
+            final_max_sensor_embedding_norm=float("nan"),
+            final_max_campaign_objective_fraction=float("nan"),
+            final_max_residual_variance_ratio=float("nan"),
+            final_max_gain_edge_jump_ratio=float("nan"),
         )
 
     best_outer_iteration = int(np.argmin(objective_history))
+    objective_deltas = np.diff(objective_history)
+    increase_mask = objective_deltas > 0.0
+    max_objective_increase_ratio = (
+        float(
+            np.max(
+                objective_deltas[increase_mask]
+                / np.maximum(np.abs(objective_history[:-1][increase_mask]), 1.0)
+            )
+        )
+        if bool(np.any(increase_mask))
+        else 0.0
+    )
     return FitConvergenceDiagnostics(
         selected_outer_iteration=best_outer_iteration,
         n_completed_outer_iterations=int(objective_history.size),
@@ -709,6 +780,12 @@ def _load_fit_diagnostics(
         termination_reason="loaded_without_diagnostics",
         selected_from_best_iterate=best_outer_iteration != objective_history.size - 1,
         max_gradient_norm_by_outer_iteration=(),
+        n_objective_increases=int(np.sum(np.diff(objective_history) > 0.0)),
+        max_objective_increase_ratio=max_objective_increase_ratio,
+        final_max_sensor_embedding_norm=float("nan"),
+        final_max_campaign_objective_fraction=float("nan"),
+        final_max_residual_variance_ratio=float("nan"),
+        final_max_gain_edge_jump_ratio=float("nan"),
     )
 
 

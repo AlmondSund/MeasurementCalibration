@@ -463,6 +463,25 @@ class FitConvergenceDiagnostics:
         Largest pre-clipping global gradient norm observed inside each
         completed outer iteration. This is a stability diagnostic, not a
         convergence proof.
+    n_objective_increases:
+        Number of outer-iteration transitions where the full objective rose
+        instead of improving or remaining flat.
+    max_objective_increase_ratio:
+        Largest relative objective increase between consecutive outer
+        iterations, normalized by ``max(abs(previous_objective), 1.0)``.
+    final_max_sensor_embedding_norm:
+        Largest Euclidean norm among the returned sensor embeddings.
+    final_max_campaign_objective_fraction:
+        Largest fraction of the selected total objective carried by a single
+        campaign. Large values indicate campaign dominance in the loss.
+    final_max_residual_variance_ratio:
+        Largest ratio between a selected campaign's residual-variance curve and
+        that campaign's raw observation variance. Large values flag potential
+        variance inflation.
+    final_max_gain_edge_jump_ratio:
+        Largest ratio between a boundary gain jump and the median interior gain
+        jump across the selected campaigns. Large values flag edge-instability
+        risk near the frequency support boundary.
     """
 
     selected_outer_iteration: int
@@ -473,6 +492,12 @@ class FitConvergenceDiagnostics:
     termination_reason: str
     selected_from_best_iterate: bool
     max_gradient_norm_by_outer_iteration: tuple[float, ...] = ()
+    n_objective_increases: int = 0
+    max_objective_increase_ratio: float = 0.0
+    final_max_sensor_embedding_norm: float = float("nan")
+    final_max_campaign_objective_fraction: float = float("nan")
+    final_max_residual_variance_ratio: float = float("nan")
+    final_max_gain_edge_jump_ratio: float = float("nan")
 
 
 @dataclass(frozen=True)
@@ -723,6 +748,12 @@ class TwoLevelCalibrationResult:
             termination_reason="unavailable",
             selected_from_best_iterate=False,
             max_gradient_norm_by_outer_iteration=(),
+            n_objective_increases=0,
+            max_objective_increase_ratio=0.0,
+            final_max_sensor_embedding_norm=float("nan"),
+            final_max_campaign_objective_fraction=float("nan"),
+            final_max_residual_variance_ratio=float("nan"),
+            final_max_gain_edge_jump_ratio=float("nan"),
         )
     )
 
@@ -1163,6 +1194,20 @@ def fit_two_level_calibration(
         else len(objective_history) - 1
     )
     selected_objective_value = objective_history[selected_outer_iteration]
+    (
+        n_objective_increases,
+        max_objective_increase_ratio,
+    ) = _objective_increase_diagnostics(objective_history)
+    (
+        final_max_sensor_embedding_norm,
+        final_max_campaign_objective_fraction,
+        final_max_residual_variance_ratio,
+        final_max_gain_edge_jump_ratio,
+    ) = _final_stability_diagnostics(
+        parameter_state=selected_parameter_state,
+        campaign_states=selected_campaign_states,
+        selected_objective_value=selected_objective_value,
+    )
     fit_diagnostics = FitConvergenceDiagnostics(
         selected_outer_iteration=int(selected_outer_iteration),
         n_completed_outer_iterations=len(objective_history),
@@ -1177,6 +1222,12 @@ def fit_two_level_calibration(
         max_gradient_norm_by_outer_iteration=tuple(
             float(value) for value in max_gradient_norm_by_outer_iteration
         ),
+        n_objective_increases=n_objective_increases,
+        max_objective_increase_ratio=max_objective_increase_ratio,
+        final_max_sensor_embedding_norm=final_max_sensor_embedding_norm,
+        final_max_campaign_objective_fraction=final_max_campaign_objective_fraction,
+        final_max_residual_variance_ratio=final_max_residual_variance_ratio,
+        final_max_gain_edge_jump_ratio=final_max_gain_edge_jump_ratio,
     )
 
     frozen_campaign_states = _freeze_campaign_states(selected_campaign_states)
@@ -2578,6 +2629,137 @@ def _gradient_global_norm(
     if not math.isfinite(gradient_norm):
         raise FloatingPointError("Global gradient norm became non-finite")
     return float(gradient_norm)
+
+
+def _objective_increase_diagnostics(
+    objective_history: Sequence[float],
+) -> tuple[int, float]:
+    """Summarize how often the outer objective regressed.
+
+    The alternating optimizer is not guaranteed to be monotone, so the fit
+    diagnostics make those regressions explicit instead of leaving users to
+    infer them from the raw history by hand.
+    """
+
+    objective_array = np.asarray(objective_history, dtype=np.float64)
+    if objective_array.size < 2:
+        return 0, 0.0
+
+    objective_deltas = np.diff(objective_array)
+    increase_mask = objective_deltas > 0.0
+    n_objective_increases = int(np.sum(increase_mask))
+    if n_objective_increases == 0:
+        return 0, 0.0
+
+    previous_objective = objective_array[:-1][increase_mask]
+    relative_increases = objective_deltas[increase_mask] / np.maximum(
+        np.abs(previous_objective),
+        1.0,
+    )
+    return n_objective_increases, float(np.max(relative_increases))
+
+
+def _final_stability_diagnostics(
+    parameter_state: _PersistentModelParameters,
+    campaign_states: Sequence[_CampaignOptimizationState],
+    selected_objective_value: float,
+) -> tuple[float, float, float, float]:
+    """Summarize stability diagnostics for the selected optimizer state.
+
+    The returned scalars are lightweight heuristics that expose common failure
+    modes without changing the solver itself: embedding explosion, campaign
+    dominance, variance inflation, and gain-edge discontinuities.
+    """
+
+    sensor_embedding_norm = np.linalg.norm(
+        np.asarray(parameter_state.sensor_embeddings, dtype=np.float64),
+        axis=1,
+    )
+    max_sensor_embedding_norm = (
+        float(np.max(sensor_embedding_norm)) if sensor_embedding_norm.size > 0 else 0.0
+    )
+
+    campaign_objective_values = np.asarray(
+        [float(campaign_state.objective_value) for campaign_state in campaign_states],
+        dtype=np.float64,
+    )
+    max_campaign_objective_fraction = (
+        float(
+            np.max(campaign_objective_values)
+            / max(abs(float(selected_objective_value)), _EPSILON)
+        )
+        if campaign_objective_values.size > 0
+        else 0.0
+    )
+
+    max_residual_variance_ratio = 0.0
+    max_gain_edge_jump_ratio = 0.0
+    for campaign_state in campaign_states:
+        observation_variance = float(
+            np.var(
+                np.asarray(campaign_state.campaign.observations_power, dtype=np.float64)
+            )
+        )
+        residual_variance_ratio = float(
+            np.max(
+                np.asarray(campaign_state.residual_variance_power2, dtype=np.float64)
+            )
+            / max(observation_variance, _EPSILON)
+        )
+        max_residual_variance_ratio = max(
+            max_residual_variance_ratio,
+            residual_variance_ratio,
+        )
+
+        gain_power = np.asarray(campaign_state.gain_power, dtype=np.float64)
+        gain_jump_ratio = _max_gain_edge_jump_ratio(gain_power)
+        max_gain_edge_jump_ratio = max(
+            max_gain_edge_jump_ratio,
+            gain_jump_ratio,
+        )
+
+    return (
+        max_sensor_embedding_norm,
+        max_campaign_objective_fraction,
+        max_residual_variance_ratio,
+        max_gain_edge_jump_ratio,
+    )
+
+
+def _max_gain_edge_jump_ratio(
+    gain_power: FloatArray,
+) -> float:
+    """Return a boundary-jump diagnostic for one stack of gain curves.
+
+    The ratio compares the largest gain jump at the first or last frequency
+    bin with the median interior jump magnitude. Values near one indicate that
+    the edges behave like the interior of the curve, while large values flag a
+    possible support-boundary kink.
+    """
+
+    gain_power = np.asarray(gain_power, dtype=np.float64)
+    if gain_power.ndim != 2:
+        raise ValueError("gain_power must have shape (n_sensors, n_frequencies)")
+    if gain_power.shape[1] < 2:
+        return 0.0
+
+    gain_jumps = np.abs(np.diff(gain_power, axis=1))
+    boundary_jumps = np.concatenate(
+        [
+            gain_jumps[:, :1].reshape(-1),
+            gain_jumps[:, -1:].reshape(-1),
+        ]
+    )
+    if gain_jumps.shape[1] > 2:
+        interior_jumps = gain_jumps[:, 1:-1].reshape(-1)
+    else:
+        interior_jumps = gain_jumps.reshape(-1)
+    if interior_jumps.size == 0:
+        return 0.0
+
+    return float(
+        np.max(boundary_jumps) / max(float(np.median(interior_jumps)), _EPSILON)
+    )
 
 
 def _project_campaign_log_gain_deviation(

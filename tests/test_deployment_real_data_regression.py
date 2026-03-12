@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from measurement_calibration import (
     DEFAULT_CAMPAIGNS_DATA_DIR,
@@ -25,8 +26,23 @@ from measurement_calibration import (
 )
 
 
+def _curve_roughness(values: np.ndarray) -> float:
+    """Return the RMS second difference of a one-dimensional curve."""
+
+    second_difference = np.diff(np.asarray(values, dtype=np.float64), n=2)
+    if second_difference.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(second_difference**2)))
+
+
 def test_checked_in_production_artifact_calibrates_real_deployment_campaign() -> None:
-    """The saved production artifact should calibrate the held-out campaign."""
+    """The saved production artifact should produce stable real deployment outputs.
+
+    This regression intentionally uses the checked-in production artifact and a
+    frozen held-out campaign. It does not prove scientific optimality, but it
+    does anchor the current deployment behavior to quantitative real-data
+    expectations instead of only shape/finiteness checks.
+    """
 
     repo_root = Path(__file__).resolve().parents[1]
     workflow_config = load_notebook_workflow_config(
@@ -47,40 +63,79 @@ def test_checked_in_production_artifact_calibrates_real_deployment_campaign() ->
         repo_root / DEFAULT_PRODUCTION_ARTIFACT_DIR
     )
 
-    sensor_id = (
-        "Node3"
-        if "Node3" in prepared_campaign.campaign.sensor_ids
-        else prepared_campaign.reliable_sensor_id
-    )
-    sensor_index = prepared_campaign.campaign.sensor_ids.index(sensor_id)
-    raw_power = prepared_campaign.campaign.observations_power[sensor_index]
+    campaign = prepared_campaign.campaign
+    gain_curves: list[np.ndarray] = []
+    floor_curves: list[np.ndarray] = []
+    variance_curves: list[np.ndarray] = []
+    calibrated_power_by_sensor: list[np.ndarray] = []
 
-    curves = evaluate_persistent_calibration(
-        result=artifact.result,
-        sensor_id=sensor_id,
-        configuration=prepared_campaign.campaign.configuration,
-        frequency_hz=prepared_campaign.campaign.frequency_hz,
-    )
-    deployment = calibrate_sensor_observations(
-        result=artifact.result,
-        sensor_id=sensor_id,
-        configuration=prepared_campaign.campaign.configuration,
-        frequency_hz=prepared_campaign.campaign.frequency_hz,
-        observations_power=raw_power,
-    )
+    for sensor_id in campaign.sensor_ids:
+        sensor_index = campaign.sensor_ids.index(sensor_id)
+        raw_power = campaign.observations_power[sensor_index]
+        curves = evaluate_persistent_calibration(
+            result=artifact.result,
+            sensor_id=sensor_id,
+            configuration=campaign.configuration,
+            frequency_hz=campaign.frequency_hz,
+        )
+        deployment = calibrate_sensor_observations(
+            result=artifact.result,
+            sensor_id=sensor_id,
+            configuration=campaign.configuration,
+            frequency_hz=campaign.frequency_hz,
+            observations_power=raw_power,
+        )
 
-    assert curves.sensor_id == sensor_id
-    assert curves.trust_diagnostics.frequency_extrapolation_detected is False
-    assert curves.trust_diagnostics.configuration_support_available is True
-    assert curves.trust_diagnostics.configuration_out_of_distribution is False
-    assert len(curves.trust_diagnostics.standardized_configuration) == 7
-    assert deployment.calibrated_power.shape == raw_power.shape
-    assert deployment.propagated_variance_power2.shape == raw_power.shape
-    assert deployment.uncertainty_scope == "observation_noise_only"
-    assert np.all(np.isfinite(curves.gain_power))
-    assert np.all(np.isfinite(curves.additive_noise_power))
-    assert np.all(np.isfinite(curves.residual_variance_power2))
-    assert np.all(np.isfinite(deployment.calibrated_power))
-    assert np.all(np.isfinite(deployment.propagated_variance_power2))
-    assert np.all(deployment.propagated_variance_power2 > 0.0)
-    assert not np.allclose(deployment.calibrated_power, raw_power)
+        assert curves.sensor_id == sensor_id
+        assert curves.trust_diagnostics.frequency_extrapolation_detected is False
+        assert curves.trust_diagnostics.configuration_support_available is True
+        assert curves.trust_diagnostics.configuration_out_of_distribution is False
+        assert len(curves.trust_diagnostics.standardized_configuration) == 7
+        assert deployment.calibrated_power.shape == raw_power.shape
+        assert deployment.propagated_variance_power2.shape == raw_power.shape
+        assert deployment.uncertainty_scope == "observation_noise_only"
+        assert np.all(np.isfinite(curves.gain_power))
+        assert np.all(np.isfinite(curves.additive_noise_power))
+        assert np.all(np.isfinite(curves.residual_variance_power2))
+        assert np.all(np.isfinite(deployment.calibrated_power))
+        assert np.all(np.isfinite(deployment.propagated_variance_power2))
+        assert np.all(deployment.propagated_variance_power2 > 0.0)
+        assert not np.allclose(deployment.calibrated_power, raw_power)
+
+        gain_curves.append(curves.gain_power)
+        floor_curves.append(curves.additive_noise_power)
+        variance_curves.append(curves.residual_variance_power2)
+        calibrated_power_by_sensor.append(deployment.calibrated_power)
+
+    gain_stack = np.stack(gain_curves, axis=0)
+    calibrated_power_stack = np.stack(calibrated_power_by_sensor, axis=0)
+
+    max_gain_roughness = max(_curve_roughness(curve) for curve in gain_curves)
+    max_floor_roughness = max(_curve_roughness(curve) for curve in floor_curves)
+    max_variance_roughness = max(_curve_roughness(curve) for curve in variance_curves)
+    mean_gain_power = float(np.mean(gain_stack))
+    mean_gain_sensor_spread = float(np.mean(np.std(gain_stack, axis=0)))
+    mean_floor_power = float(np.mean(np.stack(floor_curves, axis=0)))
+    mean_variance_power = float(np.mean(np.stack(variance_curves, axis=0)))
+    mean_calibrated_power = float(np.mean(calibrated_power_stack))
+    mean_calibrated_sensor_spread = float(
+        np.mean(np.std(calibrated_power_stack, axis=0))
+    )
+    calibrated_power_p99 = float(np.quantile(calibrated_power_stack, 0.99))
+
+    assert max_gain_roughness < 1.0e-4
+    assert max_floor_roughness < 1.0e-10
+    assert max_variance_roughness < 1.0e-4
+    assert mean_gain_power == pytest.approx(1.1477344427444924, rel=1.0e-3)
+    assert mean_gain_sensor_spread == pytest.approx(
+        0.30680642847815703,
+        rel=1.0e-3,
+    )
+    assert mean_floor_power == pytest.approx(1.8067172572475745e-08, rel=1.0e-3)
+    assert mean_variance_power == pytest.approx(10.462046908752782, rel=1.0e-3)
+    assert mean_calibrated_power == pytest.approx(0.02865272568323571, rel=1.0e-3)
+    assert mean_calibrated_sensor_spread == pytest.approx(
+        0.015555538614144226,
+        rel=1.0e-3,
+    )
+    assert calibrated_power_p99 == pytest.approx(0.5522411220876211, rel=1.0e-3)

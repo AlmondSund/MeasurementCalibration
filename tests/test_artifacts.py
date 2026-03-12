@@ -57,6 +57,13 @@ def test_save_and_load_two_level_calibration_artifact_round_trip(
     assert loaded.manifest["fit_diagnostics"]["selected_outer_iteration"] == (
         result.fit_diagnostics.selected_outer_iteration
     )
+    assert (
+        loaded.manifest["fit_diagnostics"]["n_objective_increases"]
+        == result.fit_diagnostics.n_objective_increases
+    )
+    assert loaded.manifest["fit_diagnostics"][
+        "final_max_campaign_objective_fraction"
+    ] == pytest.approx(result.fit_diagnostics.final_max_campaign_objective_fraction)
     assert "provenance" in loaded.manifest
     assert "python_version" in loaded.manifest["provenance"]
     assert "numpy_version" in loaded.manifest["provenance"]
@@ -145,6 +152,10 @@ def test_save_and_load_two_level_calibration_artifact_round_trip(
             loaded_state.residual_variance_power2,
             original_state.residual_variance_power2,
         )
+
+    first_campaign_manifest = loaded.manifest["campaigns"][0]
+    assert "campaign_fingerprint" in first_campaign_manifest
+    assert len(first_campaign_manifest["campaign_fingerprint"]) == 64
 
     with loaded.sensor_summary_path.open(newline="", encoding="utf-8") as csv_file:
         rows = list(csv.DictReader(csv_file))
