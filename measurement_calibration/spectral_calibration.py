@@ -459,6 +459,10 @@ class FitConvergenceDiagnostics:
     selected_from_best_iterate:
         Whether the returned parameters come from an earlier best iterate
         instead of the last iterate.
+    max_gradient_norm_by_outer_iteration:
+        Largest pre-clipping global gradient norm observed inside each
+        completed outer iteration. This is a stability diagnostic, not a
+        convergence proof.
     """
 
     selected_outer_iteration: int
@@ -468,6 +472,7 @@ class FitConvergenceDiagnostics:
     terminated_early: bool
     termination_reason: str
     selected_from_best_iterate: bool
+    max_gradient_norm_by_outer_iteration: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -492,6 +497,10 @@ class DeploymentTrustDiagnostics:
         envelope on at least one feature.
     out_of_range_feature_names:
         Feature names whose raw values fall outside the training envelope.
+    standardized_configuration:
+        Full standardized configuration vector consumed by the persistent
+        model. This keeps deployment-time OOD inspection auditable instead of
+        collapsing the input to one summary statistic.
     max_abs_standardized_feature:
         Largest absolute standardized feature magnitude under the training
         mean/scale normalization.
@@ -505,6 +514,7 @@ class DeploymentTrustDiagnostics:
     configuration_support_available: bool
     configuration_out_of_distribution: bool
     out_of_range_feature_names: tuple[str, ...]
+    standardized_configuration: tuple[float, ...]
     max_abs_standardized_feature: float
 
 
@@ -554,11 +564,16 @@ class DeploymentCalibrationResult:
     propagated_variance_power2:
         First-order propagated observation-noise variance with the same shape
         as ``calibrated_power``.
+    uncertainty_scope:
+        Explicit scope label for ``propagated_variance_power2``. The current
+        implementation propagates only residual observation noise through the
+        calibration map; learned parameter uncertainty is not included.
     """
 
     curves: PersistentCalibrationCurves
     calibrated_power: FloatArray
     propagated_variance_power2: FloatArray
+    uncertainty_scope: str = "observation_noise_only"
 
 
 @dataclass(frozen=True)
@@ -707,6 +722,7 @@ class TwoLevelCalibrationResult:
             terminated_early=False,
             termination_reason="unavailable",
             selected_from_best_iterate=False,
+            max_gradient_norm_by_outer_iteration=(),
         )
     )
 
@@ -965,6 +981,7 @@ def fit_two_level_calibration(
         second_moment={},
     )
     objective_history: list[float] = []
+    max_gradient_norm_by_outer_iteration: list[float] = []
     best_outer_iteration = -1
     best_objective_value = float("inf")
     best_snapshot: (
@@ -975,6 +992,7 @@ def fit_two_level_calibration(
     termination_reason = "completed_all_iterations"
 
     for outer_iteration in range(resolved_fit_config.n_outer_iterations):
+        outer_max_gradient_norm = 0.0
         for campaign_state in campaign_states:
             _refresh_campaign_latent_and_variance(
                 campaign_state=campaign_state,
@@ -1037,6 +1055,10 @@ def fit_two_level_calibration(
                     f"outer_iteration={outer_iteration} gradient_step={gradient_step}"
                 ),
             )
+            outer_max_gradient_norm = max(
+                outer_max_gradient_norm,
+                _gradient_global_norm(gradients),
+            )
             _clip_gradients_in_place(
                 gradients=gradients,
                 max_norm=resolved_fit_config.gradient_clip_norm,
@@ -1080,6 +1102,7 @@ def fit_two_level_calibration(
             context_label=f"outer_iteration={outer_iteration} total_objective",
         )
         objective_history.append(total_objective_value)
+        max_gradient_norm_by_outer_iteration.append(float(outer_max_gradient_norm))
 
         improvement_threshold = (
             resolved_fit_config.early_stopping_relative_tolerance
@@ -1150,6 +1173,9 @@ def fit_two_level_calibration(
         selected_from_best_iterate=(
             resolved_fit_config.select_best_outer_iterate
             and selected_outer_iteration != len(objective_history) - 1
+        ),
+        max_gradient_norm_by_outer_iteration=tuple(
+            float(value) for value in max_gradient_norm_by_outer_iteration
         ),
     )
 
@@ -1227,6 +1253,13 @@ def evaluate_persistent_calibration(
     allow_configuration_ood:
         Whether configurations outside the stored training envelope should be
         evaluated. When ``False``, the function raises on OOD inputs.
+
+    Returns
+    -------
+    PersistentCalibrationCurves
+        Persistent gain, floor, and residual-variance curves evaluated on the
+        requested deployment grid, together with trust diagnostics that make
+        extrapolation and configuration OOD conditions explicit.
     """
 
     sensor_index = _sensor_index(sensor_ids=result.sensor_ids, sensor_id=sensor_id)
@@ -1261,37 +1294,15 @@ def evaluate_persistent_calibration(
             f"features {trust_diagnostics.out_of_range_feature_names}."
         )
 
-    gain_basis = _build_spline_basis(
-        frequency_hz=np.asarray(frequency_hz, dtype=np.float64),
-        n_basis=result.basis_config.n_gain_basis,
-        degree=result.basis_config.spline_degree,
-        frequency_min_hz=result.frequency_min_hz,
-        frequency_max_hz=result.frequency_max_hz,
-        clip_to_support=allow_frequency_extrapolation,
-    )
-    floor_basis = _build_spline_basis(
-        frequency_hz=np.asarray(frequency_hz, dtype=np.float64),
-        n_basis=result.basis_config.n_floor_basis,
-        degree=result.basis_config.spline_degree,
-        frequency_min_hz=result.frequency_min_hz,
-        frequency_max_hz=result.frequency_max_hz,
-        clip_to_support=allow_frequency_extrapolation,
-    )
-    variance_basis = _build_spline_basis(
-        frequency_hz=np.asarray(frequency_hz, dtype=np.float64),
-        n_basis=result.basis_config.n_variance_basis,
-        degree=result.basis_config.spline_degree,
-        frequency_min_hz=result.frequency_min_hz,
-        frequency_max_hz=result.frequency_max_hz,
-        clip_to_support=allow_frequency_extrapolation,
-    )
-    forward_cache = _forward_persistent_laws(
+    forward_cache = _forward_external_configuration(
         parameter_state=parameter_state,
         standardized_configuration=standardized_configuration,
         sensor_reference_weight=result.sensor_reference_weight,
-        gain_basis=gain_basis,
-        floor_basis=floor_basis,
-        variance_basis=variance_basis,
+        frequency_hz=np.asarray(frequency_hz, dtype=np.float64),
+        frequency_min_hz=result.frequency_min_hz,
+        frequency_max_hz=result.frequency_max_hz,
+        basis_config=result.basis_config,
+        clip_to_support=allow_frequency_extrapolation,
     )
 
     log_gain = forward_cache.centered_log_gain_all[sensor_index]
@@ -1354,7 +1365,13 @@ def calibrate_sensor_observations(
     allow_frequency_extrapolation: bool = False,  # Whether clipped extrapolation is allowed
     allow_configuration_ood: bool = True,  # Whether configuration OOD evaluations are allowed
 ) -> DeploymentCalibrationResult:
-    """Evaluate the persistent laws and calibrate one deployed sensor stream."""
+    """Evaluate the persistent laws and calibrate one deployed sensor stream.
+
+    The returned variance is a first-order observation-noise propagation only.
+    Learned parameter uncertainty is intentionally not modeled here, so
+    callers should treat ``propagated_variance_power2`` as a partial
+    uncertainty estimate.
+    """
 
     curves = evaluate_persistent_calibration(
         result=result,
@@ -1381,6 +1398,7 @@ def calibrate_sensor_observations(
         curves=curves,
         calibrated_power=np.asarray(calibrated_power, dtype=np.float64),
         propagated_variance_power2=propagated_variance_power2,
+        uncertainty_scope="observation_noise_only",
     )
 
 
@@ -1573,6 +1591,9 @@ def _deployment_trust_diagnostics(
         configuration_support_available=configuration_support_available,
         configuration_out_of_distribution=configuration_out_of_distribution,
         out_of_range_feature_names=tuple(out_of_range_feature_names),
+        standardized_configuration=tuple(
+            float(value) for value in standardized_configuration
+        ),
         max_abs_standardized_feature=float(np.max(np.abs(standardized_configuration))),
     )
 
@@ -2004,8 +2025,15 @@ def _forward_external_configuration(
     frequency_min_hz: float,
     frequency_max_hz: float,
     basis_config: FrequencyBasisConfig,
+    clip_to_support: bool = True,
 ) -> _ForwardCache:
-    """Evaluate the persistent laws on an arbitrary deployment grid."""
+    """Evaluate the persistent laws on an arbitrary deployment grid.
+
+    This helper is the deployment-side counterpart to ``_forward_campaign``:
+    it builds only the spline bases required by the requested frequency grid,
+    then reuses the shared persistent-law evaluator without inventing a dummy
+    campaign object.
+    """
 
     return _forward_persistent_laws(
         parameter_state=parameter_state,
@@ -2019,6 +2047,7 @@ def _forward_external_configuration(
             degree=basis_config.spline_degree,
             frequency_min_hz=frequency_min_hz,
             frequency_max_hz=frequency_max_hz,
+            clip_to_support=clip_to_support,
         ),
         floor_basis=_build_spline_basis(
             frequency_hz=frequency_hz,
@@ -2026,6 +2055,7 @@ def _forward_external_configuration(
             degree=basis_config.spline_degree,
             frequency_min_hz=frequency_min_hz,
             frequency_max_hz=frequency_max_hz,
+            clip_to_support=clip_to_support,
         ),
         variance_basis=_build_spline_basis(
             frequency_hz=frequency_hz,
@@ -2033,6 +2063,7 @@ def _forward_external_configuration(
             degree=basis_config.spline_degree,
             frequency_min_hz=frequency_min_hz,
             frequency_max_hz=frequency_max_hz,
+            clip_to_support=clip_to_support,
         ),
     )
 
@@ -2527,17 +2558,26 @@ def _clip_gradients_in_place(
 
     if max_norm is None:
         return
-    squared_norm = 0.0
-    for gradient in gradients.values():
-        squared_norm += float(np.sum(gradient**2))
-    gradient_norm = math.sqrt(squared_norm)
-    if not math.isfinite(gradient_norm):
-        raise FloatingPointError("Global gradient norm became non-finite")
+    gradient_norm = _gradient_global_norm(gradients)
     if gradient_norm <= max_norm or gradient_norm <= _EPSILON:
         return
     scale = max_norm / gradient_norm
     for gradient in gradients.values():
         gradient *= scale
+
+
+def _gradient_global_norm(
+    gradients: Mapping[str, FloatArray],
+) -> float:
+    """Return the global Euclidean norm of the current gradient dictionary."""
+
+    squared_norm = 0.0
+    for gradient in gradients.values():
+        squared_norm += float(np.sum(np.asarray(gradient, dtype=np.float64) ** 2))
+    gradient_norm = math.sqrt(squared_norm)
+    if not math.isfinite(gradient_norm):
+        raise FloatingPointError("Global gradient norm became non-finite")
+    return float(gradient_norm)
 
 
 def _project_campaign_log_gain_deviation(

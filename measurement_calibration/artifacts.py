@@ -551,6 +551,7 @@ def _build_provenance_manifest(
         "numpy_version": np.__version__,
         "scipy_version": scipy.__version__,
         "platform": platform.platform(),
+        "hostname": platform.node() or None,
         "git_commit": _safe_git_command("rev-parse", "HEAD"),
         "git_branch": _safe_git_command("rev-parse", "--abbrev-ref", "HEAD"),
         "git_dirty": _safe_git_dirty(),
@@ -677,6 +678,13 @@ def _load_fit_diagnostics(
             selected_from_best_iterate=bool(
                 fit_diagnostics_payload["selected_from_best_iterate"]
             ),
+            max_gradient_norm_by_outer_iteration=tuple(
+                float(value)
+                for value in fit_diagnostics_payload.get(
+                    "max_gradient_norm_by_outer_iteration",
+                    (),
+                )
+            ),
         )
 
     if objective_history.size == 0:
@@ -688,6 +696,7 @@ def _load_fit_diagnostics(
             terminated_early=False,
             termination_reason="loaded_without_diagnostics",
             selected_from_best_iterate=False,
+            max_gradient_norm_by_outer_iteration=(),
         )
 
     best_outer_iteration = int(np.argmin(objective_history))
@@ -699,6 +708,7 @@ def _load_fit_diagnostics(
         terminated_early=False,
         termination_reason="loaded_without_diagnostics",
         selected_from_best_iterate=best_outer_iteration != objective_history.size - 1,
+        max_gradient_norm_by_outer_iteration=(),
     )
 
 

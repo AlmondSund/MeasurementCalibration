@@ -61,6 +61,7 @@ def test_save_and_load_two_level_calibration_artifact_round_trip(
     assert "python_version" in loaded.manifest["provenance"]
     assert "numpy_version" in loaded.manifest["provenance"]
     assert "scipy_version" in loaded.manifest["provenance"]
+    assert "hostname" in loaded.manifest["provenance"]
     assert "corpus_fingerprint" in loaded.manifest["provenance"]
     assert loaded.manifest["extra_summary"]["fit_duration_s"] == 1.25
     assert (
@@ -114,6 +115,9 @@ def test_save_and_load_two_level_calibration_artifact_round_trip(
     assert np.allclose(loaded.result.variance_head_bias, result.variance_head_bias)
     assert np.allclose(loaded.result.objective_history, result.objective_history)
     assert loaded.result.fit_diagnostics == result.fit_diagnostics
+    assert loaded.manifest["fit_diagnostics"][
+        "max_gradient_norm_by_outer_iteration"
+    ] == pytest.approx(result.fit_diagnostics.max_gradient_norm_by_outer_iteration)
     assert len(loaded.result.campaign_states) == len(result.campaign_states)
 
     for loaded_state, original_state in zip(

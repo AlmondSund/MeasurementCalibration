@@ -165,6 +165,24 @@ def test_fit_two_level_calibration_tracks_campaign_parameters() -> None:
     assert result.fit_diagnostics.n_completed_outer_iterations == len(
         result.objective_history
     )
+    assert len(result.fit_diagnostics.max_gradient_norm_by_outer_iteration) == len(
+        result.objective_history
+    )
+    assert np.all(
+        np.isfinite(
+            np.asarray(
+                result.fit_diagnostics.max_gradient_norm_by_outer_iteration,
+                dtype=np.float64,
+            )
+        )
+    )
+    assert np.all(
+        np.asarray(
+            result.fit_diagnostics.max_gradient_norm_by_outer_iteration,
+            dtype=np.float64,
+        )
+        >= 0.0
+    )
     assert result.effective_variance_floor_power2 is not None
     assert result.effective_variance_floor_power2 > fixture.fit_config.sigma_min
 
@@ -355,6 +373,7 @@ def test_calibrate_sensor_observations_improves_single_sensor_deployment() -> No
         deployment.propagated_variance_power2.shape == deployment.calibrated_power.shape
     )
     assert np.all(deployment.propagated_variance_power2 > 0.0)
+    assert deployment.uncertainty_scope == "observation_noise_only"
 
 
 def test_evaluate_persistent_calibration_rejects_frequency_extrapolation_by_default() -> (
@@ -393,6 +412,9 @@ def test_evaluate_persistent_calibration_rejects_frequency_extrapolation_by_defa
     assert curves.trust_diagnostics.frequency_extrapolation_detected is True
     assert curves.trust_diagnostics.n_frequencies_below_support == 1
     assert curves.trust_diagnostics.n_frequencies_above_support == 1
+    assert len(curves.trust_diagnostics.standardized_configuration) == len(
+        fixture.deployment_configuration.to_feature_vector()
+    )
 
 
 def test_evaluate_persistent_calibration_flags_configuration_ood() -> None:
@@ -435,3 +457,6 @@ def test_evaluate_persistent_calibration_flags_configuration_ood() -> None:
     assert curves.trust_diagnostics.configuration_support_available is True
     assert curves.trust_diagnostics.configuration_out_of_distribution is True
     assert "central_frequency_hz" in curves.trust_diagnostics.out_of_range_feature_names
+    assert curves.trust_diagnostics.max_abs_standardized_feature == pytest.approx(
+        max(abs(value) for value in curves.trust_diagnostics.standardized_configuration)
+    )
