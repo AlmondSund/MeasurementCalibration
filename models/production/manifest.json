@@ -21,7 +21,7 @@
       },
       "n_acquisitions": 179,
       "n_frequencies": 4096,
-      "objective_value": 481618986.491668,
+      "objective_value": 929771078.3941667,
       "reliable_sensor_id": "Node2",
       "sensor_ids": [
         "Node1",
@@ -44,7 +44,7 @@
       },
       "n_acquisitions": 30,
       "n_frequencies": 16384,
-      "objective_value": 919801.8683696048,
+      "objective_value": -5231654.669740074,
       "reliable_sensor_id": "Node2",
       "sensor_ids": [
         "Node1",
@@ -67,7 +67,7 @@
       },
       "n_acquisitions": 30,
       "n_frequencies": 16384,
-      "objective_value": 4907103.458477464,
+      "objective_value": 725095.7806634681,
       "reliable_sensor_id": "Node1",
       "sensor_ids": [
         "Node1",
@@ -90,7 +90,7 @@
       },
       "n_acquisitions": 30,
       "n_frequencies": 16384,
-      "objective_value": 759251623.7981336,
+      "objective_value": 876236595.6383058,
       "reliable_sensor_id": "Node1",
       "sensor_ids": [
         "Node1",
@@ -113,7 +113,7 @@
       },
       "n_acquisitions": 30,
       "n_frequencies": 16384,
-      "objective_value": 2885119.5464654495,
+      "objective_value": -4025235.705574443,
       "reliable_sensor_id": "Node2",
       "sensor_ids": [
         "Node1",
@@ -136,7 +136,76 @@
       },
       "n_acquisitions": 89,
       "n_frequencies": 4096,
-      "objective_value": -6405116.068856919,
+      "objective_value": -5504780.871167286,
+      "reliable_sensor_id": "Node2",
+      "sensor_ids": [
+        "Node1",
+        "Node2",
+        "Node3",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_fingerprint": "cbe76867ca840c9914ba2158c6ef66977baed426ce1c1fd90baba22668592cde",
+      "campaign_label": "fm_ref_fullband_02",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 16.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 16.0
+      },
+      "n_acquisitions": 89,
+      "n_frequencies": 4096,
+      "objective_value": -5614621.752260804,
+      "reliable_sensor_id": "Node2",
+      "sensor_ids": [
+        "Node1",
+        "Node2",
+        "Node3",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_fingerprint": "8c94e68035634e24fd1a3ccd396262a9b5d8e45d0edc77f4b8c529ad2497d1fd",
+      "campaign_label": "fm_sweep_rbw_003k",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 16.0,
+        "resolution_bandwidth_hz": 3000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 16.0
+      },
+      "n_acquisitions": 89,
+      "n_frequencies": 16384,
+      "objective_value": -16540024.13843647,
+      "reliable_sensor_id": "Node2",
+      "sensor_ids": [
+        "Node1",
+        "Node2",
+        "Node3",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_fingerprint": "5fe4df8f73aa7c61c0512d03a2942c77f3f2448876d2541358844bd8ff8b32f7",
+      "campaign_label": "fm_sweep_rbw_100k",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 16.0,
+        "resolution_bandwidth_hz": 100000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 16.0
+      },
+      "n_acquisitions": 88,
+      "n_frequencies": 512,
+      "objective_value": -1073943.003463886,
       "reliable_sensor_id": "Node2",
       "sensor_ids": [
         "Node1",
@@ -146,10 +215,10 @@
       ]
     }
   ],
-  "created_at_utc": "2026-03-12T04:36:44.436231+00:00",
+  "created_at_utc": "2026-03-12T18:53:38.485947+00:00",
   "extra_summary": {
-    "fit_duration_s": 55.43458931800001,
-    "n_campaigns": 6
+    "fit_duration_s": 114.30750142099993,
+    "n_campaigns": 9
   },
   "fit_config": {
     "adam_beta1": 0.9,
@@ -178,29 +247,29 @@
     "weight_decay": 0.0001
   },
   "fit_diagnostics": {
-    "final_max_campaign_objective_fraction": 0.6107346794455992,
-    "final_max_gain_edge_jump_ratio": 141.3005196681925,
-    "final_max_residual_variance_ratio": 3.538283336250309,
-    "final_max_sensor_embedding_norm": 1.9918768313211124,
-    "final_objective_value": 1243177519.3891923,
+    "final_max_campaign_objective_fraction": 0.5256678533882466,
+    "final_max_gain_edge_jump_ratio": 154.7512605276605,
+    "final_max_residual_variance_ratio": 2.2263463139045374,
+    "final_max_sensor_embedding_norm": 0.9114151739751634,
+    "final_objective_value": 4307724693.911603,
     "max_gradient_norm_by_outer_iteration": [
-      7176335994.497891,
-      2939374992.0944624,
-      977665435.2822953,
-      676575963.0361524,
-      560805643.6688477,
-      405305151.58468235,
-      361749563.6241402,
-      743732019.7041279
+      8886571657.135757,
+      4001557693.124064,
+      1411984738.614773,
+      857176902.1919363,
+      1160956715.4496949,
+      2968571853.8713937,
+      2645615986.9434576,
+      4411892766.036696
     ],
-    "max_objective_increase_ratio": 1.3112383675327597,
+    "max_objective_increase_ratio": 0.6031768929576129,
     "n_completed_outer_iterations": 8,
-    "n_objective_increases": 1,
-    "selected_from_best_iterate": false,
-    "selected_objective_value": 1243177519.3891923,
-    "selected_outer_iteration": 7,
-    "terminated_early": false,
-    "termination_reason": "completed_all_iterations"
+    "n_objective_increases": 4,
+    "selected_from_best_iterate": true,
+    "selected_objective_value": 1768742509.935182,
+    "selected_outer_iteration": 2,
+    "terminated_early": true,
+    "termination_reason": "early_stopping_no_relative_improvement"
   },
   "model_config": {
     "configuration_latent_dim": 4,
@@ -208,18 +277,18 @@
   },
   "parameters_file": "model.npz",
   "provenance": {
-    "corpus_fingerprint": "8abc14132796e3eed1dc372d4b6cd1eba1568de28ecd7938ab89a0806d9f2f50",
+    "corpus_fingerprint": "7a6d6ca660dd879399ab109fa74d18b4af031de02b57edf9fd5c2e4514112dee",
     "git_branch": "main",
-    "git_commit": "559093cd6dad98043ac6f8b32ceb3c2dfb4efe1a",
+    "git_commit": "52d235d8378453ac9ffb00c76dc5d2c1f4117e8a",
     "git_dirty": true,
-    "hostname": "9ebdaa855078",
+    "hostname": "dc7488e38240",
     "numpy_version": "2.0.2",
-    "parameters_sha256": "14cb2a054abaf0a31b5caea01bf383deeae7196e7e9397bd8f77cf319f680de8",
+    "parameters_sha256": "8f991b85c37e209e91928e0b8459414f52c87f0cdd750fd5ade22502ec09daef",
     "platform": "Linux-6.6.113+-x86_64-with-glibc2.35",
     "python_version": "3.12.12",
     "scipy_version": "1.16.3",
-    "sensor_summary_sha256": "61e94ce04253e490b464764ffb0a7f0ac1e00d33558db384c33104790ced8a17",
-    "workflow_config_fingerprint": "0ad608cbeb3568ac74f2742dec1b71f4deed290456143d16307b56eafd00adae"
+    "sensor_summary_sha256": "bee231f935c04e844d0d75716c7a3922ce901bdef4d4377e87e1e9293a9c7e63",
+    "workflow_config_fingerprint": "810a0f1995af423f14c9e99b16efe081275dd064f0aa2f60b822fcfcd1438efd"
   },
   "schema_version": 3,
   "sensor_ids": [
@@ -236,14 +305,14 @@
   },
   "sensor_summary_file": "sensor_summary.csv",
   "training_summary": {
-    "effective_variance_floor_power2": 5.117436788256793e-07,
-    "mean_campaign_objective": 207196253.18237618,
-    "n_campaigns": 6,
+    "effective_variance_floor_power2": 3.2199711530736387e-07,
+    "mean_campaign_objective": 196526945.51916587,
+    "n_campaigns": 9,
     "n_sensors": 4,
-    "objective_end": 1243177519.3891923,
-    "objective_selected": 1243177519.3891923,
-    "objective_start": 2185732362.0318713,
-    "selected_outer_iteration": 7,
-    "terminated_early": 0
+    "objective_end": 4307724693.911603,
+    "objective_selected": 1768742509.935182,
+    "objective_start": 3469923435.372845,
+    "selected_outer_iteration": 2,
+    "terminated_early": 1
   }
 }
