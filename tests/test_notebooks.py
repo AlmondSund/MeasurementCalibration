@@ -96,7 +96,7 @@ def test_sensor_calibration_notebook_tracks_fit_result_contract() -> None:
         notebook_path,
         _find_code_cell_index(
             notebook_path,
-            "fit_and_save_calibration_corpus_model(",
+            "fit_result = fit_and_save_calibration_corpus_model(",
         ),
     )
     inspection_cell_source = _code_cell_source(
