@@ -146,9 +146,9 @@
       ]
     }
   ],
-  "created_at_utc": "2026-03-12T03:43:09.167241+00:00",
+  "created_at_utc": "2026-03-12T04:36:44.436231+00:00",
   "extra_summary": {
-    "fit_duration_s": 94.20229599599998,
+    "fit_duration_s": 55.43458931800001,
     "n_campaigns": 6
   },
   "fit_config": {
@@ -210,9 +210,9 @@
   "provenance": {
     "corpus_fingerprint": "8abc14132796e3eed1dc372d4b6cd1eba1568de28ecd7938ab89a0806d9f2f50",
     "git_branch": "main",
-    "git_commit": "e066bded4f2d30623bbe001286bffa5f6902fb22",
+    "git_commit": "559093cd6dad98043ac6f8b32ceb3c2dfb4efe1a",
     "git_dirty": true,
-    "hostname": "e226cdd737ef",
+    "hostname": "9ebdaa855078",
     "numpy_version": "2.0.2",
     "parameters_sha256": "14cb2a054abaf0a31b5caea01bf383deeae7196e7e9397bd8f77cf319f680de8",
     "platform": "Linux-6.6.113+-x86_64-with-glibc2.35",
