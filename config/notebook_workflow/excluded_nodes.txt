@@ -1,4 +1,5 @@
 # Global node exclusions applied across training and deployment notebooks.
 Node7
+Node8
 Node9
 Node10
