@@ -8,7 +8,7 @@
   },
   "campaigns": [
     {
-      "campaign_fingerprint": "276b6757af1e9d2ec10daf2518a57f3ffff68d6c89fcd2aaeebcc9872423fb1d",
+      "campaign_fingerprint": "d36b1048933b6330cbbfaedb9bd5ab2ee1fbc18421979cb6b5c6e18b57c889f7",
       "campaign_label": "MeasurementCalibration",
       "configuration": {
         "acquisition_interval_s": 120.0,
@@ -19,19 +19,18 @@
         "span_hz": 20000000.0,
         "vga_gain_db": 62.0
       },
-      "n_acquisitions": 179,
+      "n_acquisitions": 180,
       "n_frequencies": 4096,
-      "objective_value": 651406161.1552428,
+      "objective_value": 711530556.1914505,
       "reliable_sensor_id": "Node2",
       "sensor_ids": [
         "Node1",
         "Node2",
-        "Node3",
-        "Node5"
+        "Node3"
       ]
     },
     {
-      "campaign_fingerprint": "9ed20bcf97a66c3b789641eab117509907d73046f89dc8dfad28112d89e12c2a",
+      "campaign_fingerprint": "9fe6a02e0fb783e41a0c0af65e4e76629438f3596aafec786870cf924ca7737a",
       "campaign_label": "LNA16_VGA0",
       "configuration": {
         "acquisition_interval_s": 120.0,
@@ -44,17 +43,16 @@
       },
       "n_acquisitions": 30,
       "n_frequencies": 16384,
-      "objective_value": -2554467.572872948,
+      "objective_value": -4732044.313609754,
       "reliable_sensor_id": "Node2",
       "sensor_ids": [
         "Node1",
         "Node2",
-        "Node3",
-        "Node5"
+        "Node3"
       ]
     },
     {
-      "campaign_fingerprint": "90082300d28c2a5477af12001e00afb564fa7fa0bfa4ce85ff7adba9c9745e98",
+      "campaign_fingerprint": "c7f26b8611547d21a4641062d40c84271a639ed2f4f3bac7f06b68e72df06d90",
       "campaign_label": "LNA16_VGA16",
       "configuration": {
         "acquisition_interval_s": 120.0,
@@ -67,17 +65,16 @@
       },
       "n_acquisitions": 30,
       "n_frequencies": 16384,
-      "objective_value": 1216908.5112540233,
-      "reliable_sensor_id": "Node1",
+      "objective_value": 543492.8904346261,
+      "reliable_sensor_id": "Node2",
       "sensor_ids": [
         "Node1",
         "Node2",
-        "Node3",
-        "Node5"
+        "Node3"
       ]
     },
     {
-      "campaign_fingerprint": "4861921a65db7a52cd535415774177ceab2063ee6449091d5286688b438e19c7",
+      "campaign_fingerprint": "dddb6c2667e850fc2aec7463394b5fe24ca50a140d1a7c7f0d13a843546d5ff4",
       "campaign_label": "LNA16_VGA32",
       "configuration": {
         "acquisition_interval_s": 120.0,
@@ -90,17 +87,16 @@
       },
       "n_acquisitions": 30,
       "n_frequencies": 16384,
-      "objective_value": 835935310.1738034,
+      "objective_value": 517026204.39299285,
       "reliable_sensor_id": "Node1",
       "sensor_ids": [
         "Node1",
         "Node2",
-        "Node3",
-        "Node5"
+        "Node3"
       ]
     },
     {
-      "campaign_fingerprint": "7b95e4ee8083e8dc9e030744a30f38f6e55009662a40f86690610971cb93fb22",
+      "campaign_fingerprint": "d3f3d90ba2eefe07d3a2c74242c5d6ba0c5193dff5406b52439d956070052190",
       "campaign_label": "LNA16_VGA8",
       "configuration": {
         "acquisition_interval_s": 120.0,
@@ -113,17 +109,16 @@
       },
       "n_acquisitions": 30,
       "n_frequencies": 16384,
-      "objective_value": -1375047.1908619124,
+      "objective_value": -3683484.5257948334,
       "reliable_sensor_id": "Node2",
       "sensor_ids": [
         "Node1",
         "Node2",
-        "Node3",
-        "Node5"
+        "Node3"
       ]
     },
     {
-      "campaign_fingerprint": "0a42d05ab1bfe2b933acfbaed97ccc069a0a268d922db52b83fc360bf87d409e",
+      "campaign_fingerprint": "7a6cad81c77c7535b8f1766257c19861a4b9f897687958f3f7ce98c60b194d8d",
       "campaign_label": "fm_ref_fullband_01",
       "configuration": {
         "acquisition_interval_s": 120.0,
@@ -136,17 +131,16 @@
       },
       "n_acquisitions": 89,
       "n_frequencies": 4096,
-      "objective_value": -6401528.3669703305,
-      "reliable_sensor_id": "Node2",
+      "objective_value": -3931234.94167339,
+      "reliable_sensor_id": "Node3",
       "sensor_ids": [
         "Node1",
         "Node2",
-        "Node3",
-        "Node5"
+        "Node3"
       ]
     },
     {
-      "campaign_fingerprint": "cbe76867ca840c9914ba2158c6ef66977baed426ce1c1fd90baba22668592cde",
+      "campaign_fingerprint": "2bec119fdc3119a94ae2d96dcc797aa9c093f1888b5224d505e362bac1ac9fc9",
       "campaign_label": "fm_ref_fullband_02",
       "configuration": {
         "acquisition_interval_s": 120.0,
@@ -157,19 +151,18 @@
         "span_hz": 20000000.0,
         "vga_gain_db": 16.0
       },
-      "n_acquisitions": 89,
+      "n_acquisitions": 90,
       "n_frequencies": 4096,
-      "objective_value": -6526170.708522385,
-      "reliable_sensor_id": "Node2",
+      "objective_value": -4132247.260728739,
+      "reliable_sensor_id": "Node3",
       "sensor_ids": [
         "Node1",
         "Node2",
-        "Node3",
-        "Node5"
+        "Node3"
       ]
     },
     {
-      "campaign_fingerprint": "8c94e68035634e24fd1a3ccd396262a9b5d8e45d0edc77f4b8c529ad2497d1fd",
+      "campaign_fingerprint": "19f289302150465e42e646e9b267148cb3d0b0e23356c4ff29de7ac90ff9354f",
       "campaign_label": "fm_sweep_rbw_003k",
       "configuration": {
         "acquisition_interval_s": 120.0,
@@ -182,17 +175,16 @@
       },
       "n_acquisitions": 89,
       "n_frequencies": 16384,
-      "objective_value": -21561919.689786125,
-      "reliable_sensor_id": "Node2",
+      "objective_value": -11991239.527556216,
+      "reliable_sensor_id": "Node3",
       "sensor_ids": [
         "Node1",
         "Node2",
-        "Node3",
-        "Node5"
+        "Node3"
       ]
     },
     {
-      "campaign_fingerprint": "5fe4df8f73aa7c61c0512d03a2942c77f3f2448876d2541358844bd8ff8b32f7",
+      "campaign_fingerprint": "992830ec089ca027ae02406cd52f99ed0f6c3c1bcfb1502f228120fb6ca8cf42",
       "campaign_label": "fm_sweep_rbw_100k",
       "configuration": {
         "acquisition_interval_s": 120.0,
@@ -205,13 +197,12 @@
       },
       "n_acquisitions": 88,
       "n_frequencies": 512,
-      "objective_value": -1167036.2228095785,
-      "reliable_sensor_id": "Node2",
+      "objective_value": -756340.9280467667,
+      "reliable_sensor_id": "Node3",
       "sensor_ids": [
         "Node1",
         "Node2",
-        "Node3",
-        "Node5"
+        "Node3"
       ]
     },
     {
@@ -228,7 +219,7 @@
       },
       "n_acquisitions": 1,
       "n_frequencies": 4096,
-      "objective_value": 1965217.6352103704,
+      "objective_value": 1584303.6526283303,
       "reliable_sensor_id": "Node7",
       "sensor_ids": [
         "Node4",
@@ -237,7 +228,7 @@
       ]
     },
     {
-      "campaign_fingerprint": "265f21e586397829447a7db8a83d181cddd2936b2e494e78c038546442c73a30",
+      "campaign_fingerprint": "d3ae90a3b8ccd1d7fcb6f9429fe69892a7e96a6a6191df9286c415bd178ffb88",
       "campaign_label": "LNA_sweep_02",
       "configuration": {
         "acquisition_interval_s": 120.0,
@@ -250,16 +241,15 @@
       },
       "n_acquisitions": 4,
       "n_frequencies": 4096,
-      "objective_value": 2049326.315265397,
-      "reliable_sensor_id": "Node2",
+      "objective_value": 901919.9985791325,
+      "reliable_sensor_id": "Node3",
       "sensor_ids": [
         "Node2",
-        "Node3",
-        "Node5"
+        "Node3"
       ]
     },
     {
-      "campaign_fingerprint": "79ea2f1329e8ef68d485e61bccb58d7ed8690db90a736098376fe6a5a658c5db",
+      "campaign_fingerprint": "4c07e484389a67f835151ccd1e58e50bc07cc2773215845985af56ac1b5f5d68",
       "campaign_label": "LNA_sweep_03",
       "configuration": {
         "acquisition_interval_s": 120.0,
@@ -272,16 +262,15 @@
       },
       "n_acquisitions": 3,
       "n_frequencies": 4096,
-      "objective_value": 2084740.3750557997,
-      "reliable_sensor_id": "Node2",
+      "objective_value": 1005260.043775345,
+      "reliable_sensor_id": "Node3",
       "sensor_ids": [
         "Node2",
-        "Node3",
-        "Node5"
+        "Node3"
       ]
     },
     {
-      "campaign_fingerprint": "0ab7d91d99cbdce940b6fd4640d374b5ee0a84760a2e42e143f33898f8b4fdc1",
+      "campaign_fingerprint": "3da3cfef09c0c38a8d8089576df285847ca9baf58e8b4f990c890e5bb23c3fc1",
       "campaign_label": "LNA_sweep_04",
       "configuration": {
         "acquisition_interval_s": 120.0,
@@ -294,16 +283,15 @@
       },
       "n_acquisitions": 4,
       "n_frequencies": 4096,
-      "objective_value": 2793375.235382825,
+      "objective_value": 1867389.4462400163,
       "reliable_sensor_id": "Node3",
       "sensor_ids": [
         "Node2",
-        "Node3",
-        "Node5"
+        "Node3"
       ]
     },
     {
-      "campaign_fingerprint": "dbad7b224986059677dd9f60bb922749a8f9bf2a700af23a4102c27e5f77197b",
+      "campaign_fingerprint": "2bcdf01268de0563d4db2de86a0cbc687904168cd0b98f11a71907b48a7358f8",
       "campaign_label": "LNA_sweep_05",
       "configuration": {
         "acquisition_interval_s": 120.0,
@@ -316,18 +304,17 @@
       },
       "n_acquisitions": 7,
       "n_frequencies": 4096,
-      "objective_value": 60442709.46681983,
+      "objective_value": 78348525.61402908,
       "reliable_sensor_id": "Node3",
       "sensor_ids": [
         "Node2",
-        "Node3",
-        "Node5"
+        "Node3"
       ]
     }
   ],
-  "created_at_utc": "2026-03-13T12:16:31.609367+00:00",
+  "created_at_utc": "2026-03-13T12:33:56.643076+00:00",
   "extra_summary": {
-    "fit_duration_s": 118.42136875099999,
+    "fit_duration_s": 111.80220106999997,
     "n_campaigns": 14
   },
   "fit_config": {
@@ -357,29 +344,28 @@
     "weight_decay": 0.0001
   },
   "fit_diagnostics": {
-    "final_max_campaign_objective_fraction": 0.5505704651198104,
-    "final_max_gain_edge_jump_ratio": 211.35690153465947,
-    "final_max_residual_variance_ratio": 4.071395569913145,
-    "final_max_sensor_embedding_norm": 1.8933575679535153,
-    "final_objective_value": 1786843232.0231128,
+    "final_max_campaign_objective_fraction": 0.5543323891371595,
+    "final_max_gain_edge_jump_ratio": 55.751795517017065,
+    "final_max_residual_variance_ratio": 4.0171039622385765,
+    "final_max_sensor_embedding_norm": 0.8210438106140517,
+    "final_objective_value": 2401203982.620384,
     "max_gradient_norm_by_outer_iteration": [
-      6231844151.358895,
-      3811980578.036219,
-      1923093867.963279,
-      1047868828.2363291,
-      1105548761.3308463,
-      2703889313.5855093,
-      1741560379.9918518,
-      1947343293.951745
+      2807617694.5911393,
+      1256236399.809089,
+      427863444.31888044,
+      403488977.3668816,
+      855042433.3863449,
+      2252808797.47631,
+      3683365846.5577617
     ],
-    "max_objective_increase_ratio": 0.20361821619453008,
-    "n_completed_outer_iterations": 8,
-    "n_objective_increases": 3,
+    "max_objective_increase_ratio": 2.194270873059636,
+    "n_completed_outer_iterations": 7,
+    "n_objective_increases": 2,
     "selected_from_best_iterate": true,
-    "selected_objective_value": 1518307579.3793159,
-    "selected_outer_iteration": 3,
-    "terminated_early": false,
-    "termination_reason": "completed_all_iterations"
+    "selected_objective_value": 1283581060.992983,
+    "selected_outer_iteration": 1,
+    "terminated_early": true,
+    "termination_reason": "early_stopping_no_relative_improvement"
   },
   "model_config": {
     "configuration_latent_dim": 4,
@@ -387,18 +373,18 @@
   },
   "parameters_file": "model.npz",
   "provenance": {
-    "corpus_fingerprint": "c6a4afe79e9eef27fa4d471a808b8f4d5eb35d1effa6fc4db5d806184dc00115",
+    "corpus_fingerprint": "c05482147b5d39fc5b3fb20c11d93fa1c0028d44cc14e5fd143c4d84909314e2",
     "git_branch": "main",
-    "git_commit": "3aaa6eae2c420142851e9e07caf1b3675468d183",
+    "git_commit": "ed6cfaf186b46bcbb5a385ea1d185a8b887559cd",
     "git_dirty": true,
-    "hostname": "a7900d69b7c3",
+    "hostname": "b5e638f33f6f",
     "numpy_version": "2.0.2",
-    "parameters_sha256": "a03212df9dc1c7434b3eabeaf02957688391e38df2a1218afcb280535df49c47",
+    "parameters_sha256": "15f8b277ede430931c570eb05854b16288712ddca6058b710e4d08e801308b33",
     "platform": "Linux-6.6.113+-x86_64-with-glibc2.35",
     "python_version": "3.12.12",
     "scipy_version": "1.16.3",
-    "sensor_summary_sha256": "aa54ea9271173b855f7f1b109c80104342208beebc7ab38c11e91484fb229908",
-    "workflow_config_fingerprint": "697c4c887c69cec9e0648e1fa2f534d6d1e844cc7a495b0430ef0fda31d005dc"
+    "sensor_summary_sha256": "d1df8e3f07dbb0191314f30256ee6e8832de5a35b8b3ab790a21797a0b943915",
+    "workflow_config_fingerprint": "16d8019d4a75a5ca9f79dde7306c144a52f2eed9ae8ad83b8568339143391b3c"
   },
   "schema_version": 3,
   "sensor_ids": [
@@ -406,29 +392,27 @@
     "Node2",
     "Node3",
     "Node4",
-    "Node5",
     "Node7",
     "Node8"
   ],
   "sensor_reference_weight": {
-    "Node1": 0.14285714285714285,
-    "Node2": 0.14285714285714285,
-    "Node3": 0.14285714285714285,
-    "Node4": 0.14285714285714285,
-    "Node5": 0.14285714285714285,
-    "Node7": 0.14285714285714285,
-    "Node8": 0.14285714285714285
+    "Node1": 0.16666666666666666,
+    "Node2": 0.16666666666666666,
+    "Node3": 0.16666666666666666,
+    "Node4": 0.16666666666666666,
+    "Node7": 0.16666666666666666,
+    "Node8": 0.16666666666666666
   },
   "sensor_summary_file": "sensor_summary.csv",
   "training_summary": {
-    "effective_variance_floor_power2": 3.239451084891329e-07,
-    "mean_campaign_objective": 108450541.36544366,
+    "effective_variance_floor_power2": 3.1962532534154634e-07,
+    "mean_campaign_objective": 91684361.48090859,
     "n_campaigns": 14,
-    "n_sensors": 7,
-    "objective_end": 1786843232.0231128,
-    "objective_selected": 1518307579.3793159,
-    "objective_start": 3222197677.610514,
-    "selected_outer_iteration": 3,
-    "terminated_early": 0
+    "n_sensors": 6,
+    "objective_end": 2401203982.620384,
+    "objective_selected": 1283581060.992983,
+    "objective_start": 1988080234.6845024,
+    "selected_outer_iteration": 1,
+    "terminated_early": 1
   }
 }
