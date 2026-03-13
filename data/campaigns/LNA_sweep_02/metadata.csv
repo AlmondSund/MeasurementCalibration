@@ -1,0 +1,2 @@
+campaign_label,campaign_id,start_date,stop_date,start_time,stop_time,acquisition_freq_minutes,central_freq_MHz,span_MHz,sample_rate_hz,lna_gain_dB,vga_gain_dB,rbw_kHz,antenna_amp
+LNA_sweep_02,219,2026-03-12T00:00:00.000Z,2026-03-12T00:00:00.000Z,18:32:00,21:32:00,2,98,20,20000000,8,16,10,true
