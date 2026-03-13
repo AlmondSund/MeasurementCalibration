@@ -1,9 +1,4 @@
 # Campaigns used to fit the shared notebook calibration artifact.
-MeasurementCalibration
-LNA16_VGA0
-LNA16_VGA16
-LNA16_VGA32
-LNA16_VGA8
 fm_ref_fullband_01
 fm_ref_fullband_02
 fm_sweep_rbw_003k
