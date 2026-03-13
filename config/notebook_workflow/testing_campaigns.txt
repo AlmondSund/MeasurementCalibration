@@ -1,7 +1,3 @@
 # Campaigns reserved for deployment/testing notebooks.
 test-calibration
 MeasurementCalibration
-LNA16_VGA0
-LNA16_VGA16
-LNA16_VGA32
-LNA16_VGA8
