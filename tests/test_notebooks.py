@@ -176,7 +176,7 @@ def test_sensor_calibration_notebook_selected_cells_execute_without_training(
 def test_deployment_notebook_selected_cells_execute_without_training(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The deployment notebook should run its non-training workflow cells."""
+    """The deployment notebook should run its campaign-level workflow cells."""
 
     notebook_path = _repo_root() / "notebooks" / "examples" / "deployment.ipynb"
     production_manifest_path = _repo_root() / "models" / "production" / "manifest.json"
@@ -200,21 +200,25 @@ def test_deployment_notebook_selected_cells_execute_without_training(
             ),
             _find_code_cell_index(
                 notebook_path,
-                "deployment = calibrate_sensor_observations(",
+                "overlay_data = build_campaign_overlay_data(",
             ),
         ),
         monkeypatch=monkeypatch,
     )
 
     artifact = namespace["artifact"]
-    curves = namespace["curves"]
-    deployment = namespace["deployment"]
-    raw_power = namespace["raw_power"]
+    deployment_campaign = namespace["deployment_campaign"]
+    overlay_data = namespace["overlay_data"]
+    overlay_animation = namespace["overlay_animation"]
+    first_frame = overlay_data.frame_alignment_rows[0]
 
     assert artifact.manifest_path.exists()
     assert artifact.parameters_path.exists()
-    assert curves.trust_diagnostics.frequency_extrapolation_detected is False
-    assert curves.trust_diagnostics.configuration_out_of_distribution is False
-    assert curves.trust_diagnostics.overall_out_of_distribution is False
-    assert deployment.uncertainty_scope == "observation_noise_only"
-    assert deployment.calibrated_power.shape == raw_power.shape
+    assert overlay_data.campaign_label == deployment_campaign.campaign_label
+    assert overlay_data.sensor_ids == tuple(deployment_campaign.campaign.sensor_ids)
+    assert len(overlay_data.sensor_ids) >= 2
+    assert len(overlay_data.frame_alignment_rows) == deployment_campaign.campaign.n_acquisitions
+    assert first_frame["record_index"] == 1.0
+    assert first_frame["mean_pairwise_raw_rmse_db"] >= 0.0
+    assert first_frame["mean_pairwise_calibrated_rmse_db"] >= 0.0
+    assert overlay_animation.data
