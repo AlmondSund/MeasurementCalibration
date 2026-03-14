@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -170,6 +171,59 @@ def _max_gain_edge_jump_ratio(gain_power: np.ndarray) -> float:
     return float(
         np.max(boundary_jumps) / max(float(np.median(interior_jumps)), 1.0e-12)
     )
+
+
+def _mean_persistent_only_same_scene_dispersion(
+    *,
+    result: Any,
+    fixture: Any,
+    log_floor_power: float,
+) -> float:
+    """Compute the persistent-only same-scene log-dispersion on a corpus.
+
+    This helper mirrors the quantity regularized by the offline consistency
+    term, but it evaluates the fitted deployment-scale laws on the frozen
+    synthetic campaigns so tests can compare fits trained with different
+    weights.
+    """
+
+    per_campaign_dispersion: list[float] = []
+    for campaign in fixture.corpus.campaigns:
+        transformed_corrected_power_by_sensor: list[np.ndarray] = []
+        for sensor_id, observations_power in zip(
+            campaign.sensor_ids,
+            campaign.observations_power,
+            strict=True,
+        ):
+            curves = evaluate_persistent_calibration(
+                result=result,
+                sensor_id=sensor_id,
+                configuration=campaign.configuration,
+                frequency_hz=campaign.frequency_hz,
+            )
+            persistent_only_corrected_power = (
+                np.maximum(
+                    observations_power - curves.additive_noise_power[np.newaxis, :],
+                    0.0,
+                )
+                / curves.gain_power[np.newaxis, :]
+            )
+            transformed_corrected_power_by_sensor.append(
+                np.log(persistent_only_corrected_power + log_floor_power)
+            )
+
+        transformed_corrected_power = np.stack(
+            transformed_corrected_power_by_sensor,
+            axis=0,
+        )
+        centered_transformed_power = transformed_corrected_power - np.mean(
+            transformed_corrected_power,
+            axis=0,
+            keepdims=True,
+        )
+        per_campaign_dispersion.append(float(np.mean(centered_transformed_power**2)))
+
+    return float(np.mean(per_campaign_dispersion))
 
 
 def test_fit_two_level_calibration_tracks_campaign_parameters() -> None:
@@ -478,6 +532,44 @@ def test_same_scene_consistency_penalty_avoids_backend_prod_on_shape(
     assert penalty_value >= 0.0
     assert gradient_log_gain.shape == gain_power.shape
     assert gradient_floor_parameter.shape == gain_power.shape
+
+
+def test_large_consistency_weight_reduces_same_scene_dispersion() -> None:
+    """A stronger consistency weight should reduce fitted same-scene spread.
+
+    The synthetic fixture already approximately satisfies the model, so the
+    improvement is modest. The important regression is directional: if the
+    penalty path stops influencing the persistent deployment map, the
+    persistent-only dispersion will stop decreasing when the weight is raised
+    by orders of magnitude.
+    """
+
+    fixture = build_synthetic_two_level_fixture()
+    no_penalty_result = fit_two_level_calibration(
+        corpus=fixture.corpus,
+        basis_config=fixture.basis_config,
+        model_config=fixture.model_config,
+        fit_config=replace(fixture.fit_config, lambda_consistency=0.0),
+    )
+    strong_penalty_result = fit_two_level_calibration(
+        corpus=fixture.corpus,
+        basis_config=fixture.basis_config,
+        model_config=fixture.model_config,
+        fit_config=replace(fixture.fit_config, lambda_consistency=500.0),
+    )
+
+    no_penalty_dispersion = _mean_persistent_only_same_scene_dispersion(
+        result=no_penalty_result,
+        fixture=fixture,
+        log_floor_power=fixture.fit_config.consistency_log_floor_power,
+    )
+    strong_penalty_dispersion = _mean_persistent_only_same_scene_dispersion(
+        result=strong_penalty_result,
+        fixture=fixture,
+        log_floor_power=fixture.fit_config.consistency_log_floor_power,
+    )
+
+    assert strong_penalty_dispersion < no_penalty_dispersion
 
 
 def test_persistent_gain_respects_global_reference_convention() -> None:

@@ -331,7 +331,10 @@ class TwoLevelFitConfig:
         Weight of the persistent-only same-scene consistency penalty. This
         term compares sensors after applying only the deployment-time
         calibration map, so campaign-specific deviations cannot absorb the
-        disagreement.
+        disagreement. The penalty itself is averaged over the same-scene
+        tensor, whereas the Gaussian negative log-likelihood is accumulated as
+        a raw sum, so practically influential values of ``lambda_consistency``
+        can be much larger than ``1`` on larger corpora.
     consistency_log_floor_power:
         Positive numerical floor [linear power] used by the logarithmic
         consistency transform

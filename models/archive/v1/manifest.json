@@ -8,121 +8,6 @@
   },
   "campaigns": [
     {
-      "campaign_fingerprint": "276b6757af1e9d2ec10daf2518a57f3ffff68d6c89fcd2aaeebcc9872423fb1d",
-      "campaign_label": "MeasurementCalibration",
-      "configuration": {
-        "acquisition_interval_s": 120.0,
-        "antenna_amplifier_enabled": true,
-        "central_frequency_hz": 98000000.0,
-        "lna_gain_db": 0.0,
-        "resolution_bandwidth_hz": 10000.0,
-        "span_hz": 20000000.0,
-        "vga_gain_db": 62.0
-      },
-      "n_acquisitions": 179,
-      "n_frequencies": 4096,
-      "objective_value": 929771078.3941667,
-      "reliable_sensor_id": "Node2",
-      "sensor_ids": [
-        "Node1",
-        "Node2",
-        "Node3",
-        "Node5"
-      ]
-    },
-    {
-      "campaign_fingerprint": "9ed20bcf97a66c3b789641eab117509907d73046f89dc8dfad28112d89e12c2a",
-      "campaign_label": "LNA16_VGA0",
-      "configuration": {
-        "acquisition_interval_s": 120.0,
-        "antenna_amplifier_enabled": true,
-        "central_frequency_hz": 98000000.0,
-        "lna_gain_db": 16.0,
-        "resolution_bandwidth_hz": 3000.0,
-        "span_hz": 20000000.0,
-        "vga_gain_db": 0.0
-      },
-      "n_acquisitions": 30,
-      "n_frequencies": 16384,
-      "objective_value": -5231654.669740074,
-      "reliable_sensor_id": "Node2",
-      "sensor_ids": [
-        "Node1",
-        "Node2",
-        "Node3",
-        "Node5"
-      ]
-    },
-    {
-      "campaign_fingerprint": "90082300d28c2a5477af12001e00afb564fa7fa0bfa4ce85ff7adba9c9745e98",
-      "campaign_label": "LNA16_VGA16",
-      "configuration": {
-        "acquisition_interval_s": 120.0,
-        "antenna_amplifier_enabled": true,
-        "central_frequency_hz": 98000000.0,
-        "lna_gain_db": 16.0,
-        "resolution_bandwidth_hz": 3000.0,
-        "span_hz": 20000000.0,
-        "vga_gain_db": 16.0
-      },
-      "n_acquisitions": 30,
-      "n_frequencies": 16384,
-      "objective_value": 725095.7806634681,
-      "reliable_sensor_id": "Node1",
-      "sensor_ids": [
-        "Node1",
-        "Node2",
-        "Node3",
-        "Node5"
-      ]
-    },
-    {
-      "campaign_fingerprint": "4861921a65db7a52cd535415774177ceab2063ee6449091d5286688b438e19c7",
-      "campaign_label": "LNA16_VGA32",
-      "configuration": {
-        "acquisition_interval_s": 120.0,
-        "antenna_amplifier_enabled": true,
-        "central_frequency_hz": 98000000.0,
-        "lna_gain_db": 16.0,
-        "resolution_bandwidth_hz": 3000.0,
-        "span_hz": 20000000.0,
-        "vga_gain_db": 32.0
-      },
-      "n_acquisitions": 30,
-      "n_frequencies": 16384,
-      "objective_value": 876236595.6383058,
-      "reliable_sensor_id": "Node1",
-      "sensor_ids": [
-        "Node1",
-        "Node2",
-        "Node3",
-        "Node5"
-      ]
-    },
-    {
-      "campaign_fingerprint": "7b95e4ee8083e8dc9e030744a30f38f6e55009662a40f86690610971cb93fb22",
-      "campaign_label": "LNA16_VGA8",
-      "configuration": {
-        "acquisition_interval_s": 120.0,
-        "antenna_amplifier_enabled": true,
-        "central_frequency_hz": 98000000.0,
-        "lna_gain_db": 16.0,
-        "resolution_bandwidth_hz": 3000.0,
-        "span_hz": 20000000.0,
-        "vga_gain_db": 8.0
-      },
-      "n_acquisitions": 30,
-      "n_frequencies": 16384,
-      "objective_value": -4025235.705574443,
-      "reliable_sensor_id": "Node2",
-      "sensor_ids": [
-        "Node1",
-        "Node2",
-        "Node3",
-        "Node5"
-      ]
-    },
-    {
       "campaign_fingerprint": "0a42d05ab1bfe2b933acfbaed97ccc069a0a268d922db52b83fc360bf87d409e",
       "campaign_label": "fm_ref_fullband_01",
       "configuration": {
@@ -136,7 +21,7 @@
       },
       "n_acquisitions": 89,
       "n_frequencies": 4096,
-      "objective_value": -5504780.871167286,
+      "objective_value": 20407563.422967236,
       "reliable_sensor_id": "Node2",
       "sensor_ids": [
         "Node1",
@@ -159,7 +44,7 @@
       },
       "n_acquisitions": 89,
       "n_frequencies": 4096,
-      "objective_value": -5614621.752260804,
+      "objective_value": 18847973.505831502,
       "reliable_sensor_id": "Node2",
       "sensor_ids": [
         "Node1",
@@ -182,7 +67,7 @@
       },
       "n_acquisitions": 89,
       "n_frequencies": 16384,
-      "objective_value": -16540024.13843647,
+      "objective_value": 172435244.58835977,
       "reliable_sensor_id": "Node2",
       "sensor_ids": [
         "Node1",
@@ -205,7 +90,7 @@
       },
       "n_acquisitions": 88,
       "n_frequencies": 512,
-      "objective_value": -1073943.003463886,
+      "objective_value": -18982.069353212333,
       "reliable_sensor_id": "Node2",
       "sensor_ids": [
         "Node1",
@@ -213,22 +98,311 @@
         "Node3",
         "Node5"
       ]
+    },
+    {
+      "campaign_fingerprint": "cfebcde8e8d2473ae78cbae3df31ce258bc7c1550e61a000503803db482e8b32",
+      "campaign_label": "LNA_sweep_01",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 0.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 16.0
+      },
+      "n_acquisitions": 1,
+      "n_frequencies": 4096,
+      "objective_value": 1401672.876100072,
+      "reliable_sensor_id": "Node2",
+      "sensor_ids": [
+        "Node2",
+        "Node3",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_fingerprint": "265f21e586397829447a7db8a83d181cddd2936b2e494e78c038546442c73a30",
+      "campaign_label": "LNA_sweep_02",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 8.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 16.0
+      },
+      "n_acquisitions": 4,
+      "n_frequencies": 4096,
+      "objective_value": 2368897.1012175945,
+      "reliable_sensor_id": "Node2",
+      "sensor_ids": [
+        "Node2",
+        "Node3",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_fingerprint": "79ea2f1329e8ef68d485e61bccb58d7ed8690db90a736098376fe6a5a658c5db",
+      "campaign_label": "LNA_sweep_03",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 16.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 16.0
+      },
+      "n_acquisitions": 3,
+      "n_frequencies": 4096,
+      "objective_value": 4017625.6046454874,
+      "reliable_sensor_id": "Node2",
+      "sensor_ids": [
+        "Node2",
+        "Node3",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_fingerprint": "0ab7d91d99cbdce940b6fd4640d374b5ee0a84760a2e42e143f33898f8b4fdc1",
+      "campaign_label": "LNA_sweep_04",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 24.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 16.0
+      },
+      "n_acquisitions": 4,
+      "n_frequencies": 4096,
+      "objective_value": 17796977.014613897,
+      "reliable_sensor_id": "Node3",
+      "sensor_ids": [
+        "Node2",
+        "Node3",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_fingerprint": "dbad7b224986059677dd9f60bb922749a8f9bf2a700af23a4102c27e5f77197b",
+      "campaign_label": "LNA_sweep_05",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 32.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 16.0
+      },
+      "n_acquisitions": 7,
+      "n_frequencies": 4096,
+      "objective_value": 151171051.4840648,
+      "reliable_sensor_id": "Node3",
+      "sensor_ids": [
+        "Node2",
+        "Node3",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_fingerprint": "351fd6a6d3d8b607455260adc74946908b3a1b4952e3db21c61d305bb07f26c1",
+      "campaign_label": "LNA_sweep_06",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 40.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 16.0
+      },
+      "n_acquisitions": 1,
+      "n_frequencies": 4096,
+      "objective_value": 6626725.32137501,
+      "reliable_sensor_id": "Node3",
+      "sensor_ids": [
+        "Node2",
+        "Node3",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_fingerprint": "df396c38d5045c7eeba5329faf965a70df6d23fd23c6ec85787d314d401a9de9",
+      "campaign_label": "VGA_sweep_01",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 16.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 0.0
+      },
+      "n_acquisitions": 4,
+      "n_frequencies": 4096,
+      "objective_value": 726826.3640669899,
+      "reliable_sensor_id": "Node3",
+      "sensor_ids": [
+        "Node1",
+        "Node2",
+        "Node3",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_fingerprint": "2f70cfb28264eecf64ec60f6d19eac209fc19397ae86b26f0bee1eead1f8a9ef",
+      "campaign_label": "VGA_sweep_02",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 16.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 2.0
+      },
+      "n_acquisitions": 1,
+      "n_frequencies": 4096,
+      "objective_value": 1388946.679652692,
+      "reliable_sensor_id": "Node2",
+      "sensor_ids": [
+        "Node1",
+        "Node2",
+        "Node3",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_fingerprint": "34f691de6e2e638bde70339304ba32a5e05a25af507e463b68cc516e2f65c213",
+      "campaign_label": "VGA_sweep_03",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 16.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 4.0
+      },
+      "n_acquisitions": 86,
+      "n_frequencies": 4096,
+      "objective_value": -8131275.0902770525,
+      "reliable_sensor_id": "Node2",
+      "sensor_ids": [
+        "Node1",
+        "Node2",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_fingerprint": "04786410598db606637300ebc4a612b87e3706d199ad91d778ee9df634cb9a67",
+      "campaign_label": "VGA_sweep_04",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 16.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 6.0
+      },
+      "n_acquisitions": 18,
+      "n_frequencies": 4096,
+      "objective_value": -248348.91061985353,
+      "reliable_sensor_id": "Node2",
+      "sensor_ids": [
+        "Node1",
+        "Node2",
+        "Node5"
+      ]
+    },
+    {
+      "campaign_fingerprint": "30e3664e0519bbce67b9e4f532023ffee9d92968328d972fd3132bb2d77ddf40",
+      "campaign_label": "VGA_sweep_05",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 16.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 8.0
+      },
+      "n_acquisitions": 1,
+      "n_frequencies": 4096,
+      "objective_value": 2735441.308662736,
+      "reliable_sensor_id": "Node3",
+      "sensor_ids": [
+        "Node1",
+        "Node2",
+        "Node3"
+      ]
+    },
+    {
+      "campaign_fingerprint": "22ca31e23843739ec0768b69f2e970ed63d42f569334be9b193de559a87d1622",
+      "campaign_label": "VGA_sweep_06",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 16.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 10.0
+      },
+      "n_acquisitions": 90,
+      "n_frequencies": 4096,
+      "objective_value": -4373309.644903302,
+      "reliable_sensor_id": "Node2",
+      "sensor_ids": [
+        "Node1",
+        "Node2"
+      ]
+    },
+    {
+      "campaign_fingerprint": "90948ec6a5c97b52ca0a051717a09ce2d24aed86b4e19097f883cdd730152d28",
+      "campaign_label": "VGA_sweep_07",
+      "configuration": {
+        "acquisition_interval_s": 120.0,
+        "antenna_amplifier_enabled": true,
+        "central_frequency_hz": 98000000.0,
+        "lna_gain_db": 16.0,
+        "resolution_bandwidth_hz": 10000.0,
+        "span_hz": 20000000.0,
+        "vga_gain_db": 12.0
+      },
+      "n_acquisitions": 2,
+      "n_frequencies": 4096,
+      "objective_value": 3442029.177931193,
+      "reliable_sensor_id": "Node2",
+      "sensor_ids": [
+        "Node1",
+        "Node2",
+        "Node3"
+      ]
     }
   ],
-  "created_at_utc": "2026-03-12T18:53:38.485947+00:00",
+  "created_at_utc": "2026-03-14T22:44:52.317115+00:00",
   "extra_summary": {
-    "fit_duration_s": 114.30750142099993,
-    "n_campaigns": 9
+    "fit_duration_s": 100.68254466399958,
+    "n_campaigns": 17
   },
   "fit_config": {
     "adam_beta1": 0.9,
     "adam_beta2": 0.999,
     "adam_epsilon": 1e-08,
     "adaptive_variance_floor_ratio": 0.0001,
+    "consistency_log_floor_power": 1e-10,
     "divergence_tolerance_ratio": 10.0,
     "early_stopping_patience": 5,
     "early_stopping_relative_tolerance": 0.0001,
     "gradient_clip_norm": 10.0,
+    "lambda_consistency": 0.05,
     "lambda_delta_floor_shrink": 0.2,
     "lambda_delta_floor_smooth": 1.0,
     "lambda_delta_gain_shrink": 0.2,
@@ -247,29 +421,29 @@
     "weight_decay": 0.0001
   },
   "fit_diagnostics": {
-    "final_max_campaign_objective_fraction": 0.5256678533882466,
-    "final_max_gain_edge_jump_ratio": 154.7512605276605,
-    "final_max_residual_variance_ratio": 2.2263463139045374,
-    "final_max_sensor_embedding_norm": 0.9114151739751634,
-    "final_objective_value": 4307724693.911603,
+    "final_max_campaign_objective_fraction": 0.4414680641613029,
+    "final_max_gain_edge_jump_ratio": 127.57805544139306,
+    "final_max_residual_variance_ratio": 0.4624007972263819,
+    "final_max_sensor_embedding_norm": 2.3898300266481547,
+    "final_objective_value": 1139565742.8110807,
     "max_gradient_norm_by_outer_iteration": [
-      8886571657.135757,
-      4001557693.124064,
-      1411984738.614773,
-      857176902.1919363,
-      1160956715.4496949,
-      2968571853.8713937,
-      2645615986.9434576,
-      4411892766.036696
+      10159596558.447002,
+      1593550012.9383078,
+      1846921525.1678956,
+      1804848131.4768202,
+      1404287285.206648,
+      1140723071.707093,
+      1321808537.68235,
+      1911389862.2598014
     ],
-    "max_objective_increase_ratio": 0.6031768929576129,
+    "max_objective_increase_ratio": 1.1906762504956727,
     "n_completed_outer_iterations": 8,
-    "n_objective_increases": 4,
+    "n_objective_increases": 3,
     "selected_from_best_iterate": true,
-    "selected_objective_value": 1768742509.935182,
-    "selected_outer_iteration": 2,
-    "terminated_early": true,
-    "termination_reason": "early_stopping_no_relative_improvement"
+    "selected_objective_value": 390595059.0467981,
+    "selected_outer_iteration": 5,
+    "terminated_early": false,
+    "termination_reason": "completed_all_iterations"
   },
   "model_config": {
     "configuration_latent_dim": 4,
@@ -277,18 +451,18 @@
   },
   "parameters_file": "model.npz",
   "provenance": {
-    "corpus_fingerprint": "7a6d6ca660dd879399ab109fa74d18b4af031de02b57edf9fd5c2e4514112dee",
+    "corpus_fingerprint": "361f6bc6d93991e5eed57a9d6a248e3d8a4f11a907eab1eb982a638c5dd05b25",
     "git_branch": "main",
-    "git_commit": "52d235d8378453ac9ffb00c76dc5d2c1f4117e8a",
+    "git_commit": "5a5936e0369f8b1523a205b82f383cfbf359d8b1",
     "git_dirty": true,
-    "hostname": "dc7488e38240",
+    "hostname": "3740482f0d92",
     "numpy_version": "2.0.2",
-    "parameters_sha256": "8f991b85c37e209e91928e0b8459414f52c87f0cdd750fd5ade22502ec09daef",
+    "parameters_sha256": "676cbb101ae50ac6cbe01466f2488ba5241e0717e5fa406fb320cc508a6475de",
     "platform": "Linux-6.6.113+-x86_64-with-glibc2.35",
     "python_version": "3.12.12",
     "scipy_version": "1.16.3",
-    "sensor_summary_sha256": "bee231f935c04e844d0d75716c7a3922ce901bdef4d4377e87e1e9293a9c7e63",
-    "workflow_config_fingerprint": "810a0f1995af423f14c9e99b16efe081275dd064f0aa2f60b822fcfcd1438efd"
+    "sensor_summary_sha256": "147782ea30a5e18e3950a3dda744a3039f691259133d27c27fdca6a3d2f89d4f",
+    "workflow_config_fingerprint": "a29ddd9e7a718b0c85422aa9953b04b15eca4e23794660e04dc8062e8bbbabe7"
   },
   "schema_version": 3,
   "sensor_ids": [
@@ -305,14 +479,14 @@
   },
   "sensor_summary_file": "sensor_summary.csv",
   "training_summary": {
-    "effective_variance_floor_power2": 3.2199711530736387e-07,
-    "mean_campaign_objective": 196526945.51916587,
-    "n_campaigns": 9,
+    "effective_variance_floor_power2": 1.6922585564956314e-08,
+    "mean_campaign_objective": 22976179.92554915,
+    "n_campaigns": 17,
     "n_sensors": 4,
-    "objective_end": 4307724693.911603,
-    "objective_selected": 1768742509.935182,
-    "objective_start": 3469923435.372845,
-    "selected_outer_iteration": 2,
-    "terminated_early": 1
+    "objective_end": 1139565742.8110807,
+    "objective_selected": 390595059.0467981,
+    "objective_start": 1313736143.0873506,
+    "selected_outer_iteration": 5,
+    "terminated_early": 0
   }
 }
