@@ -1,0 +1,6 @@
+# Python bytecode and interpreter caches are generated artifacts, not source.
+__pycache__/
+*.py[cod]
+
+# Jupyter checkpoint files are notebook editor state, not reproducible inputs.
+.ipynb_checkpoints/

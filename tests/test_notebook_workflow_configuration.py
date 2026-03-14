@@ -167,12 +167,13 @@ def test_repository_notebook_workflow_config_matches_expected_campaign_split() -
     )
 
     assert config.excluded_sensor_ids == ("Node7", "Node8", "Node9", "Node10")
-    assert config.excluded_leading_measurements_per_sensor == 0
+    assert config.excluded_leading_measurements_per_sensor == 2
     assert config.training_campaign_labels == (
         "fm_ref_fullband_01",
         "fm_ref_fullband_02",
         "fm_sweep_rbw_003k",
         "fm_sweep_rbw_100k",
+        "MeasurementCalibration",
         "LNA_sweep_01",
         "LNA_sweep_02",
         "LNA_sweep_03",
@@ -187,10 +188,7 @@ def test_repository_notebook_workflow_config_matches_expected_campaign_split() -
         "VGA_sweep_06",
         "VGA_sweep_07",
     )
-    assert config.testing_campaign_labels == (
-        "test-calibration",
-        "MeasurementCalibration",
-    )
+    assert config.testing_campaign_labels == ("test-calibration",)
 
 
 def _write_config_file(path: Path, contents: str) -> None:

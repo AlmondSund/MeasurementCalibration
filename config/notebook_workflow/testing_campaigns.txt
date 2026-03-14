@@ -1,3 +1,4 @@
-# Campaigns reserved for deployment/testing notebooks.
+# Held-out deployment campaign that matches the supported production
+# configuration. ``MeasurementCalibration`` is trained on so the artifact
+# support envelope includes this deployment regime.
 test-calibration
-MeasurementCalibration

@@ -3,6 +3,9 @@ fm_ref_fullband_01
 fm_ref_fullband_02
 fm_sweep_rbw_003k
 fm_sweep_rbw_100k
+# Include one deployment-configuration campaign in training so the promoted
+# artifact remains in-support for the 98 MHz / 20 MHz / VGA=62 deployments.
+MeasurementCalibration
 LNA_sweep_01
 LNA_sweep_02
 LNA_sweep_03
