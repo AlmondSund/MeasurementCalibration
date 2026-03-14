@@ -1,0 +1,18 @@
+capaign_label, campaign_id
+fm_ref_fullband_01,212
+fm_ref_fullband_02,213
+fm_sweep_rbw_003k,215
+fm_sweep_rbw_100k,216
+LNA_sweep_01,218
+LNA_sweep_02,219
+LNA_sweep_03,220
+LNA_sweep_04,221
+LNA_sweep_05,222
+LNA_sweep_06,223
+VGA_sweep_01,230
+VGA_sweep_02,231
+VGA_sweep_03,232
+VGA_sweep_04,233
+VGA_sweep_05,234
+VGA_sweep_06,235
+VGA_sweep_07,236
