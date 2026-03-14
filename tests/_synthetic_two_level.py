@@ -61,6 +61,8 @@ def build_synthetic_two_level_fixture() -> SyntheticTwoLevelFixture:
         lambda_delta_floor_shrink=0.1,
         lambda_delta_variance_shrink=0.1,
         lambda_reliable_sensor_anchor=0.05,
+        lambda_consistency=0.05,
+        consistency_log_floor_power=1.0e-10,
         weight_decay=1.0e-4,
         gradient_clip_norm=5.0,
         random_seed=4,

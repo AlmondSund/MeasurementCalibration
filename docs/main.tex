@@ -566,7 +566,7 @@ This is optional and should remain soft.
 
 \subsubsection{Total offline training objective}
 
-The total offline objective is
+The baseline offline objective is
 \begin{equation}
 \mathcal J_{\mathrm{off}}(\theta,\Delta,S)
 =
@@ -587,7 +587,8 @@ subject to the identifiability constraints
 
 \subsection{Offline estimation problem}
 
-The offline fit is the constrained optimization problem
+Without any additional same-scene agreement penalty, the offline fit is the
+constrained optimization problem
 \begin{equation}
 (\widehat\theta,\widehat\Delta,\widehat S)
 \in
@@ -612,6 +613,168 @@ A practical implementation may use block alternation:
     constraints \eqref{eq:global-reference-convention} and
     \eqref{eq:campaign-mean-zero-delta}.
 \end{enumerate}
+
+\subsection{Optional extension: same-scene consistency penalty}
+
+The motivation is structural: each offline calibration campaign is a
+\emph{same-scene} experiment, so all participating sensors observe the same
+latent spectrum in \eqref{eq:offline-forward}. At deployment, however, only
+the persistent laws transfer. It is therefore natural to regularize the
+persistent calibration map itself so that, on the offline corpus, it produces
+mutually consistent corrected spectra across sensors.
+
+For campaign $m$, define the persistent deployment-scale laws evaluated on the
+campaign grid:
+\begin{align}
+G_{m,s,j}^\star(\theta)
+&=
+G_s^{(0)}(f_{m,j},c_m)
+\exp\!\bigl(\Gamma_{s,\theta}^\star(f_{m,j},c_m)\bigr),
+\label{eq:consistency-persistent-gain}
+\\
+N_{m,s,j}^\star(\theta)
+&=
+\phi\!\bigl(H_{s,\theta}^\star(f_{m,j},c_m)\bigr).
+\label{eq:consistency-persistent-floor}
+\end{align}
+
+Using only these persistent laws, define the persistent-only calibrated
+spectrum
+\begin{equation}
+\widetilde S_{m,s,k,j}(\theta)
+=
+\frac{
+\bigl[
+Y_{m,s,k,j}
+-
+N_{m,s,j}^\star(\theta)
+\bigr]_+
+}{
+G_{m,s,j}^\star(\theta)
+}.
+\label{eq:consistency-calibrated-spectrum}
+\end{equation}
+
+Under the same-scene assumption, an ideally calibrated model should satisfy
+\[
+\widetilde S_{m,s,k,j}(\theta)\approx S_{m,k,j}
+\qquad
+\text{for all }s\in\mathcal S_m,
+\]
+so the values
+\(
+\widetilde S_{m,s,k,j}(\theta)
+\)
+should agree across sensors for each aligned acquisition and frequency bin.
+
+Because deployment diagnostics are naturally interpreted in a logarithmic
+power scale, introduce a monotone transform
+\begin{equation}
+T:(0,\infty)\to\mathbb R,
+\qquad
+T(x)=\log(x+\varepsilon_T),
+\qquad
+\varepsilon_T>0.
+\label{eq:consistency-transform}
+\end{equation}
+One may equivalently use $10\log_{10}(x+\varepsilon_T)$; this differs only by
+a constant scaling that can be absorbed into the penalty weight.
+
+Define
+\begin{equation}
+Z_{m,s,k,j}(\theta)
+=
+T\!\bigl(\widetilde S_{m,s,k,j}(\theta)\bigr),
+\label{eq:consistency-log-spectrum}
+\end{equation}
+and let the cross-sensor consensus value be
+\begin{equation}
+\bar Z_{m,k,j}(\theta)
+=
+\frac{1}{M_m}
+\sum_{s\in\mathcal S_m}
+Z_{m,s,k,j}(\theta).
+\label{eq:consistency-consensus}
+\end{equation}
+
+The same-scene consistency loss is then
+\begin{equation}
+\mathcal L_{\mathrm{cons}}(\theta)
+=
+\sum_{m=1}^{M_{\mathrm{cal}}}
+\frac{1}{K_mJ_m}
+\sum_{k=1}^{K_m}
+\sum_{j=1}^{J_m}
+\frac{1}{M_m}
+\sum_{s\in\mathcal S_m}
+\bigl(
+Z_{m,s,k,j}(\theta)
+-
+\bar Z_{m,k,j}(\theta)
+\bigr)^2.
+\label{eq:Lcons}
+\end{equation}
+This penalty is zero if and only if, for every training campaign, aligned
+acquisition, and frequency bin, the persistent-only corrected spectra
+coincide across all participating sensors.
+
+Moreover, for fixed $(m,k,j)$,
+\begin{equation}
+\sum_{\substack{s,s'\in\mathcal S_m\\ s<s'}}
+\bigl(
+Z_{m,s,k,j}
+-
+Z_{m,s',k,j}
+\bigr)^2
+=
+M_m
+\sum_{s\in\mathcal S_m}
+\bigl(
+Z_{m,s,k,j}
+-
+\bar Z_{m,k,j}
+\bigr)^2.
+\label{eq:consistency-pairwise-identity}
+\end{equation}
+Hence minimizing the consensus variance in \eqref{eq:Lcons} is equivalent,
+up to a campaign-dependent constant factor, to minimizing the mean pairwise
+squared discrepancy across sensors in the logarithmic power domain.
+
+The augmented offline objective becomes
+\begin{equation}
+\mathcal J_{\mathrm{off}}^{\mathrm{cons}}(\theta,\Delta,S)
+=
+\mathcal J_{\mathrm{off}}(\theta,\Delta,S)
++
+\lambda_{\mathrm{cons}}
+\mathcal L_{\mathrm{cons}}(\theta),
+\qquad
+\lambda_{\mathrm{cons}}\ge 0,
+\label{eq:Joff-cons}
+\end{equation}
+subject to the same identifiability constraints
+\eqref{eq:global-reference-convention} and
+\eqref{eq:campaign-mean-zero-delta}.
+
+\paragraph{Interpretation.}
+The role of $\mathcal L_{\mathrm{cons}}$ is not to replace the Gaussian
+likelihood term, but to complement it with a criterion that directly matches
+the physical structure of the offline corpus: after calibration, colocated
+sensors should yield the same spectrum. The likelihood controls data fidelity
+and noise weighting, whereas $\mathcal L_{\mathrm{cons}}$ explicitly promotes
+\emph{post-calibration inter-sensor agreement} on the training campaigns.
+This is precisely the quantity later inspected by before/after RMSE
+diagnostics.
+
+A crucial point is that the penalty is constructed from the \emph{persistent}
+laws only, as in
+\eqref{eq:consistency-persistent-gain}--\eqref{eq:consistency-calibrated-spectrum},
+rather than from the full campaign-specific parameters. If the disagreement
+penalty were imposed mainly through the nuisance deviations $\Delta$, those
+terms could absorb the training disagreement without improving the calibration
+map that is actually deployed. Thus
+\eqref{eq:Joff-cons} encourages the part of the model that transfers online to
+produce mutually consistent corrected spectra on same-scene offline campaigns.
 
 \subsection{Persistent deployment laws after offline training}
 

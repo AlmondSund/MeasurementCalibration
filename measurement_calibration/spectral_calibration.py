@@ -327,6 +327,15 @@ class TwoLevelFitConfig:
         Quadratic shrinkage strengths that keep the deviations close to zero.
     lambda_reliable_sensor_anchor:
         Soft anchor weight applied to the reliable sensor log-gain deviation.
+    lambda_consistency:
+        Weight of the persistent-only same-scene consistency penalty. This
+        term compares sensors after applying only the deployment-time
+        calibration map, so campaign-specific deviations cannot absorb the
+        disagreement.
+    consistency_log_floor_power:
+        Positive numerical floor [linear power] used by the logarithmic
+        consistency transform
+        ``log(\\widetilde S + consistency_log_floor_power)``.
     weight_decay:
         Global L2 regularization on the persistent parameters ``theta``.
     gradient_clip_norm:
@@ -369,6 +378,8 @@ class TwoLevelFitConfig:
     lambda_delta_floor_shrink: float = 0.2
     lambda_delta_variance_shrink: float = 0.2
     lambda_reliable_sensor_anchor: float = 0.1
+    lambda_consistency: float = 0.0
+    consistency_log_floor_power: float = 1.0e-12
     weight_decay: float = 1.0e-4
     gradient_clip_norm: float | None = 10.0
     random_seed: int = 0
@@ -395,6 +406,8 @@ class TwoLevelFitConfig:
             raise ValueError("sigma_min must be strictly positive")
         if self.adaptive_variance_floor_ratio < 0.0:
             raise ValueError("adaptive_variance_floor_ratio cannot be negative")
+        if self.consistency_log_floor_power <= 0.0:
+            raise ValueError("consistency_log_floor_power must be strictly positive")
         if self.weight_decay < 0.0:
             raise ValueError("weight_decay cannot be negative")
         if self.gradient_clip_norm is not None and self.gradient_clip_norm <= 0.0:
@@ -407,6 +420,7 @@ class TwoLevelFitConfig:
             ("lambda_delta_floor_shrink", self.lambda_delta_floor_shrink),
             ("lambda_delta_variance_shrink", self.lambda_delta_variance_shrink),
             ("lambda_reliable_sensor_anchor", self.lambda_reliable_sensor_anchor),
+            ("lambda_consistency", self.lambda_consistency),
         ):
             if value < 0.0:
                 raise ValueError(f"{name} cannot be negative")
@@ -958,7 +972,8 @@ def fit_two_level_calibration(
     1. updating the latent same-scene spectra of each campaign by weighted
        least squares;
     2. optimizing the persistent global parameters and campaign-specific
-       deviations by gradient descent on the full offline objective.
+       deviations by gradient descent on the full offline objective, including
+       the optional persistent-only same-scene consistency penalty.
 
     The implementation intentionally keeps the persistent law generator light:
     trainable sensor embeddings, an affine-plus-``tanh`` configuration encoder,
@@ -1453,10 +1468,12 @@ def apply_deployed_calibration(
     if np.any(gain_power <= 0.0):
         raise ValueError("gain_power must be strictly positive")
 
-    corrected_power = observations_power - additive_noise_power
-    if enforce_nonnegative:
-        corrected_power = np.clip(corrected_power, 0.0, None)
-    return corrected_power / gain_power
+    return _apply_calibration_map(
+        observations_power=observations_power,
+        gain_power=gain_power,
+        additive_noise_power=additive_noise_power,
+        enforce_nonnegative=enforce_nonnegative,
+    )
 
 
 def calibrate_sensor_observations(
@@ -1543,6 +1560,54 @@ def _sigmoid(
     exp_values = np.exp(values[negative_mask])
     result[negative_mask] = exp_values / (1.0 + exp_values)
     return result
+
+
+def _apply_calibration_map(
+    observations_power: FloatArray,
+    gain_power: FloatArray,
+    additive_noise_power: FloatArray,
+    enforce_nonnegative: bool,
+) -> FloatArray:
+    """Apply ``[Y - N]_+ / G`` with broadcast-compatible calibration curves.
+
+    Purpose
+    -------
+    Deployment uses one gain/floor curve per sensor, but the offline
+    consistency penalty needs the same calibration map on an entire
+    same-scene tensor. This helper keeps the algebra in one place while
+    leaving the public ``apply_deployed_calibration`` API unchanged.
+    """
+
+    observations_power = np.asarray(observations_power, dtype=np.float64)
+    gain_power = np.asarray(gain_power, dtype=np.float64)
+    additive_noise_power = np.asarray(additive_noise_power, dtype=np.float64)
+
+    if observations_power.ndim < 1:
+        raise ValueError("observations_power must have at least one dimension")
+    if gain_power.shape[-1] != observations_power.shape[-1]:
+        raise ValueError(
+            "gain_power must share the observations_power frequency axis length"
+        )
+    if additive_noise_power.shape != gain_power.shape:
+        raise ValueError("additive_noise_power must match gain_power exactly")
+    try:
+        np.broadcast_shapes(
+            observations_power.shape,
+            gain_power.shape,
+            additive_noise_power.shape,
+        )
+    except ValueError as error:
+        raise ValueError(
+            "gain_power and additive_noise_power must be broadcast-compatible "
+            "with observations_power"
+        ) from error
+    if np.any(gain_power <= 0.0):
+        raise ValueError("gain_power must be strictly positive")
+
+    corrected_power = observations_power - additive_noise_power
+    if enforce_nonnegative:
+        corrected_power = np.clip(corrected_power, 0.0, None)
+    return corrected_power / gain_power
 
 
 def _sensor_index(
@@ -2637,6 +2702,28 @@ def _accumulate_campaign_objective_and_gradients(
     gradients[delta_floor_key] += grad_floor_total
     gradients[delta_variance_key] += grad_variance_total
 
+    # The deployment-transfer penalty acts only on the persistent laws. The
+    # campaign-specific deviations remain nuisance terms and therefore must not
+    # receive this gradient contribution.
+    grad_persistent_log_gain = np.asarray(grad_log_gain_total, dtype=np.float64)
+    grad_persistent_floor = np.asarray(grad_floor_total, dtype=np.float64)
+    if fit_config.lambda_consistency > 0.0:
+        (
+            consistency_penalty,
+            consistency_grad_log_gain,
+            consistency_grad_floor,
+        ) = _same_scene_consistency_penalty_and_gradients(
+            observations_power=campaign_state.campaign.observations_power,
+            persistent_log_gain=participant_log_gain,
+            persistent_floor_parameter=participant_floor_parameter,
+            log_floor_power=fit_config.consistency_log_floor_power,
+        )
+        objective_value += fit_config.lambda_consistency * consistency_penalty
+        grad_persistent_log_gain += (
+            fit_config.lambda_consistency * consistency_grad_log_gain
+        )
+        grad_persistent_floor += fit_config.lambda_consistency * consistency_grad_floor
+
     objective_value += _accumulate_deviation_regularization(
         deviation=campaign_state.delta_log_gain,
         second_difference=campaign_state.second_difference,
@@ -2685,7 +2772,7 @@ def _accumulate_campaign_objective_and_gradients(
         forward_output_all=forward_cache.raw_log_gain_all,
         combined_features=forward_cache.combined_features,
         output_gradient_all=_expand_centered_log_gain_gradient(
-            participant_gradient=grad_log_gain_total,
+            participant_gradient=grad_persistent_log_gain,
             participant_indices=campaign_state.sensor_indices,
             sensor_reference_weight=sensor_reference_weight,
             n_sensors=forward_cache.raw_log_gain_all.shape[0],
@@ -2701,7 +2788,7 @@ def _accumulate_campaign_objective_and_gradients(
         forward_output_all=forward_cache.floor_parameter_all,
         combined_features=forward_cache.combined_features,
         output_gradient_all=_expand_participant_gradient(
-            participant_gradient=grad_floor_total,
+            participant_gradient=grad_persistent_floor,
             participant_indices=campaign_state.sensor_indices,
             n_sensors=forward_cache.floor_parameter_all.shape[0],
         ),
@@ -2753,6 +2840,118 @@ def _accumulate_deviation_regularization(
         objective_value += shrink_weight * float(np.sum(deviation**2))
         gradient += 2.0 * shrink_weight * deviation
     return objective_value
+
+
+def _same_scene_consistency_penalty_and_gradients(
+    observations_power: FloatArray,
+    persistent_log_gain: FloatArray,
+    persistent_floor_parameter: FloatArray,
+    log_floor_power: float,
+) -> tuple[float, FloatArray, FloatArray]:
+    """Evaluate the persistent-only same-scene consistency penalty.
+
+    Purpose
+    -------
+    Offline campaigns are same-scene experiments, so once the persistent
+    deployment map is applied, every participating sensor should recover the
+    same latent spectrum. The penalty is intentionally computed from the
+    persistent laws only, without campaign-specific deviations, so the part of
+    the model that transfers online is the part that is regularized.
+
+    Parameters
+    ----------
+    observations_power:
+        Same-scene PSD tensor with shape ``(n_sensors, n_acquisitions,
+        n_frequencies)`` [linear power].
+    persistent_log_gain:
+        Persistent log-gain curves for the participating sensors with shape
+        ``(n_sensors, n_frequencies)``.
+    persistent_floor_parameter:
+        Persistent additive-floor pre-activations with the same shape as
+        ``persistent_log_gain``.
+    log_floor_power:
+        Positive numerical floor [linear power] used by the logarithmic power
+        transform ``log(\\widetilde S + log_floor_power)``.
+
+    Returns
+    -------
+    tuple[float, np.ndarray, np.ndarray]
+        Penalty value, gradient with respect to ``persistent_log_gain``, and
+        gradient with respect to ``persistent_floor_parameter``.
+    """
+
+    observations_power = np.asarray(observations_power, dtype=np.float64)
+    persistent_log_gain = np.asarray(persistent_log_gain, dtype=np.float64)
+    persistent_floor_parameter = np.asarray(
+        persistent_floor_parameter,
+        dtype=np.float64,
+    )
+
+    if observations_power.ndim != 3:
+        raise ValueError(
+            "observations_power must have shape "
+            "(n_sensors, n_acquisitions, n_frequencies)"
+        )
+    if persistent_log_gain.shape != (
+        observations_power.shape[0],
+        observations_power.shape[2],
+    ):
+        raise ValueError(
+            "persistent_log_gain must have shape (n_sensors, n_frequencies)"
+        )
+    if persistent_floor_parameter.shape != persistent_log_gain.shape:
+        raise ValueError("persistent_floor_parameter must match persistent_log_gain")
+    if log_floor_power <= 0.0:
+        raise ValueError("log_floor_power must be strictly positive")
+
+    persistent_gain_power = np.exp(persistent_log_gain)
+    persistent_additive_noise_power = _softplus(persistent_floor_parameter)
+
+    # Reuse the deployment calibration map on the entire campaign tensor so
+    # the regularizer matches the quantity that is inspected after training.
+    persistent_only_corrected_power = _apply_calibration_map(
+        observations_power=observations_power,
+        gain_power=persistent_gain_power[:, np.newaxis, :],
+        additive_noise_power=persistent_additive_noise_power[:, np.newaxis, :],
+        enforce_nonnegative=True,
+    )
+    transformed_corrected_power = np.log(
+        persistent_only_corrected_power + log_floor_power
+    )
+    consensus_power = np.mean(transformed_corrected_power, axis=0, keepdims=True)
+    centered_transformed_power = transformed_corrected_power - consensus_power
+
+    normalization = float(np.prod(observations_power.shape))
+    objective_value = float(np.sum(centered_transformed_power**2) / normalization)
+
+    transformed_gradient = (2.0 / normalization) * centered_transformed_power
+    corrected_power_gradient = transformed_gradient / (
+        persistent_only_corrected_power + log_floor_power
+    )
+
+    # The log-gain is shared across acquisitions, so the per-record gradients
+    # collapse onto the campaign frequency grid by summing over the record axis.
+    gradient_log_gain = np.sum(
+        corrected_power_gradient * (-persistent_only_corrected_power),
+        axis=1,
+    )
+
+    positive_support_mask = persistent_only_corrected_power > 0.0
+    gradient_floor_parameter = np.sum(
+        corrected_power_gradient
+        * (
+            -positive_support_mask.astype(np.float64)
+            * _sigmoid(persistent_floor_parameter)[:, np.newaxis, :]
+            / persistent_gain_power[:, np.newaxis, :]
+        ),
+        axis=1,
+    )
+
+    return (
+        objective_value,
+        np.asarray(gradient_log_gain, dtype=np.float64),
+        np.asarray(gradient_floor_parameter, dtype=np.float64),
+    )
 
 
 def _expand_centered_log_gain_gradient(

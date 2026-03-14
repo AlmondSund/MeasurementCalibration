@@ -15,10 +15,12 @@ from measurement_calibration.spectral_calibration import (
     _forward_campaign,
     _initialize_campaign_states,
     _initialize_persistent_parameters,
+    _inverse_softplus,
     _optimizer_parameter_dict,
     _refresh_campaign_latent_and_variance,
     _resolve_effective_variance_floor_power2,
     _resolve_sensor_reference_weight,
+    _same_scene_consistency_penalty_and_gradients,
     _zero_gradient_dict,
     calibrate_sensor_observations,
     evaluate_persistent_calibration,
@@ -390,6 +392,53 @@ def test_single_campaign_gradients_match_finite_differences(
         rel=5.0e-4,
         abs=1.0e-5,
     )
+
+
+def test_same_scene_consistency_penalty_vanishes_for_identical_corrected_spectra() -> (
+    None
+):
+    """Persistent-only consensus loss should vanish when sensors already agree."""
+
+    latent_power = np.asarray(
+        [
+            [0.35, 0.55, 0.75],
+            [0.40, 0.50, 0.70],
+        ],
+        dtype=np.float64,
+    )
+    gain_power = np.asarray(
+        [
+            [1.2, 0.9, 1.1],
+            [0.8, 1.4, 1.3],
+            [1.5, 1.1, 0.7],
+        ],
+        dtype=np.float64,
+    )
+    additive_noise_power = np.asarray(
+        [
+            [0.02, 0.01, 0.03],
+            [0.04, 0.02, 0.01],
+            [0.03, 0.05, 0.02],
+        ],
+        dtype=np.float64,
+    )
+    observations_power = (
+        gain_power[:, np.newaxis, :] * latent_power[np.newaxis, :, :]
+        + additive_noise_power[:, np.newaxis, :]
+    )
+
+    penalty_value, gradient_log_gain, gradient_floor_parameter = (
+        _same_scene_consistency_penalty_and_gradients(
+            observations_power=observations_power,
+            persistent_log_gain=np.log(gain_power),
+            persistent_floor_parameter=_inverse_softplus(additive_noise_power),
+            log_floor_power=1.0e-12,
+        )
+    )
+
+    assert penalty_value == pytest.approx(0.0, abs=1.0e-12)
+    assert np.allclose(gradient_log_gain, 0.0, atol=1.0e-12)
+    assert np.allclose(gradient_floor_parameter, 0.0, atol=1.0e-12)
 
 
 def test_persistent_gain_respects_global_reference_convention() -> None:
