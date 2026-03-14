@@ -201,6 +201,68 @@ def test_prepare_calibration_campaign_prunes_only_misaligned_sensors(
     assert preparation.aligned_dataset.n_records == 4
 
 
+def test_prepare_calibration_campaign_excludes_configured_leading_measurements(
+    tmp_path: Path,
+) -> None:
+    """The scalar leading-row exclusion should apply to every retained sensor."""
+
+    campaigns_root = tmp_path / "campaigns"
+    _write_campaign_fixture(
+        campaigns_root / "startup-transient",
+        central_freq_mhz=98.0,
+        span_mhz=20.0,
+        rbw_khz=10.0,
+    )
+
+    preparation = prepare_calibration_campaign(
+        campaign_label="startup-transient",
+        campaigns_root=campaigns_root,
+        excluded_leading_measurements_per_sensor=1,
+        alignment_tolerance_ms=80,
+    )
+
+    assert preparation.excluded_leading_measurements_by_sensor_id == (
+        ("Node1", 1),
+        ("Node2", 1),
+        ("Node3", 1),
+        ("Node9", 1),
+    )
+    assert preparation.aligned_dataset.n_records == 4
+    assert preparation.campaign.observations_power.shape == (4, 4, 8)
+    assert tuple(preparation.aligned_dataset.timestamps_ms[:, 0]) == (
+        2_000,
+        2_030,
+        1_980,
+        2_050,
+    )
+
+
+def test_prepare_calibration_campaign_rejects_overlarge_leading_measurement_exclusions(
+    tmp_path: Path,
+) -> None:
+    """The scalar leading-row exclusion must leave at least one record."""
+
+    campaigns_root = tmp_path / "campaigns"
+    _write_campaign_fixture(
+        campaigns_root / "startup-transient",
+        central_freq_mhz=98.0,
+        span_mhz=20.0,
+        rbw_khz=10.0,
+    )
+
+    try:
+        prepare_calibration_campaign(
+            campaign_label="startup-transient",
+            campaigns_root=campaigns_root,
+            excluded_leading_measurements_per_sensor=5,
+        )
+    except ValueError as error:
+        assert "leave at least one record" in str(error)
+        assert "Node1" in str(error)
+    else:
+        raise AssertionError("Overlarge leading-row exclusions should raise")
+
+
 def test_prepare_calibration_corpus_and_fit_wrapper_write_artifact(
     tmp_path: Path,
 ) -> None:
@@ -222,6 +284,7 @@ def test_prepare_calibration_corpus_and_fit_wrapper_write_artifact(
     )
     preparation = prepare_calibration_corpus(
         campaigns_root=campaigns_root,
+        excluded_leading_measurements_per_sensor=1,
         ranking_histogram_bins=8,
         distribution_histogram_bins=32,
         alignment_tolerance_ms=80,
@@ -267,6 +330,14 @@ def test_prepare_calibration_corpus_and_fit_wrapper_write_artifact(
 
     assert preparation.corpus.sensor_ids == ("Node1", "Node2", "Node3", "Node9")
     assert len(preparation.prepared_campaigns) == 2
+    assert preparation.prepared_campaigns[
+        0
+    ].excluded_leading_measurements_by_sensor_id == (
+        ("Node1", 1),
+        ("Node2", 1),
+        ("Node3", 1),
+        ("Node9", 1),
+    )
     assert fit_result.fit_duration_s >= 0.0
     assert (
         fit_result.artifact.parameters_path.name
@@ -457,6 +528,10 @@ def _write_workflow_config_fixture(config_dir: Path) -> None:
 
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "excluded_nodes.txt").write_text("Node9\n", encoding="utf-8")
+    (config_dir / "excluded_measurements.txt").write_text(
+        "# Drop this many leading measurements from every retained sensor.\n0\n",
+        encoding="utf-8",
+    )
     (config_dir / "training_campaigns.txt").write_text(
         "campaign-a\ncampaign-b\n",
         encoding="utf-8",

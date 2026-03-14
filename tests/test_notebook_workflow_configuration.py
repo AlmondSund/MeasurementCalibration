@@ -44,10 +44,18 @@ def test_load_notebook_workflow_config_parses_comment_friendly_lists(
         test-calibration
         """,
     )
+    _write_config_file(
+        config_dir / "excluded_measurements.txt",
+        """
+        # Drop one startup-corrupted record from every retained sensor.
+        1
+        """,
+    )
 
     config = load_notebook_workflow_config(config_dir)
 
     assert config.excluded_sensor_ids == ("Node9", "Node10")
+    assert config.excluded_leading_measurements_per_sensor == 1
     assert config.training_campaign_labels == (
         "LNA16_VGA0",
         "MeasurementCalibration",
@@ -75,8 +83,45 @@ def test_load_notebook_workflow_config_rejects_train_test_overlap(
         config_dir / "testing_campaigns.txt",
         "MeasurementCalibration\n",
     )
+    _write_config_file(config_dir / "excluded_measurements.txt", "")
 
     with pytest.raises(ValueError, match="overlap"):
+        load_notebook_workflow_config(config_dir)
+
+
+def test_load_notebook_workflow_config_rejects_multiple_measurement_counts(
+    tmp_path: Path,
+) -> None:
+    """The scalar exclusion file should reject more than one configured value."""
+
+    config_dir = tmp_path / "notebook_workflow"
+    _write_config_file(config_dir / "excluded_nodes.txt", "")
+    _write_config_file(config_dir / "training_campaigns.txt", "campaign-a\n")
+    _write_config_file(config_dir / "testing_campaigns.txt", "campaign-b\n")
+    _write_config_file(
+        config_dir / "excluded_measurements.txt",
+        """
+        1
+        2
+        """,
+    )
+
+    with pytest.raises(ValueError, match="at most one non-comment integer entry"):
+        load_notebook_workflow_config(config_dir)
+
+
+def test_load_notebook_workflow_config_rejects_negative_measurement_count(
+    tmp_path: Path,
+) -> None:
+    """The global exclusion count must be a non-negative integer."""
+
+    config_dir = tmp_path / "notebook_workflow"
+    _write_config_file(config_dir / "excluded_nodes.txt", "")
+    _write_config_file(config_dir / "training_campaigns.txt", "campaign-a\n")
+    _write_config_file(config_dir / "testing_campaigns.txt", "campaign-b\n")
+    _write_config_file(config_dir / "excluded_measurements.txt", "-1\n")
+
+    with pytest.raises(ValueError, match="non-negative integer"):
         load_notebook_workflow_config(config_dir)
 
 
@@ -100,6 +145,7 @@ def test_fingerprint_notebook_workflow_config_changes_when_files_change(
 
     config_dir = tmp_path / "notebook_workflow"
     _write_config_file(config_dir / "excluded_nodes.txt", "Node9\n")
+    _write_config_file(config_dir / "excluded_measurements.txt", "")
     _write_config_file(config_dir / "training_campaigns.txt", "campaign-a\n")
     _write_config_file(config_dir / "testing_campaigns.txt", "campaign-b\n")
 
@@ -120,16 +166,31 @@ def test_repository_notebook_workflow_config_matches_expected_campaign_split() -
         repo_root / DEFAULT_NOTEBOOK_WORKFLOW_CONFIG_DIR
     )
 
-    assert config.excluded_sensor_ids == ("Node9", "Node10")
+    assert config.excluded_sensor_ids == ("Node7", "Node8", "Node9", "Node10")
+    assert config.excluded_leading_measurements_per_sensor == 0
     assert config.training_campaign_labels == (
-        "MeasurementCalibration",
-        "LNA16_VGA0",
-        "LNA16_VGA16",
-        "LNA16_VGA32",
-        "LNA16_VGA8",
         "fm_ref_fullband_01",
+        "fm_ref_fullband_02",
+        "fm_sweep_rbw_003k",
+        "fm_sweep_rbw_100k",
+        "LNA_sweep_01",
+        "LNA_sweep_02",
+        "LNA_sweep_03",
+        "LNA_sweep_04",
+        "LNA_sweep_05",
+        "LNA_sweep_06",
+        "VGA_sweep_01",
+        "VGA_sweep_02",
+        "VGA_sweep_03",
+        "VGA_sweep_04",
+        "VGA_sweep_05",
+        "VGA_sweep_06",
+        "VGA_sweep_07",
     )
-    assert config.testing_campaign_labels == ("test-calibration",)
+    assert config.testing_campaign_labels == (
+        "test-calibration",
+        "MeasurementCalibration",
+    )
 
 
 def _write_config_file(path: Path, contents: str) -> None:

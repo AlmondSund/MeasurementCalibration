@@ -6,6 +6,8 @@ training, and visualization, while this adapter owns the user-editable lists
 that define:
 
 - globally excluded sensor ids;
+- one global leading-measurement exclusion count applied to every retained
+  sensor in every campaign;
 - campaigns used for training;
 - campaigns used for testing/deployment.
 """
@@ -21,6 +23,7 @@ import re
 
 DEFAULT_NOTEBOOK_WORKFLOW_CONFIG_DIR = Path("config") / "notebook_workflow"
 _EXCLUDED_NODES_FILENAME = "excluded_nodes.txt"
+_EXCLUDED_MEASUREMENTS_FILENAME = "excluded_measurements.txt"
 _TRAINING_CAMPAIGNS_FILENAME = "training_campaigns.txt"
 _TESTING_CAMPAIGNS_FILENAME = "testing_campaigns.txt"
 
@@ -35,6 +38,10 @@ class NotebookWorkflowConfig:
         Directory that contains the plain-text list files.
     excluded_sensor_ids:
         Global node exclusions applied across training and deployment.
+    excluded_leading_measurements_per_sensor:
+        Number of leading rows to discard from every retained sensor CSV before
+        timestamp alignment. This supports wake-up transients that corrupt the
+        first measurements uniformly across the corpus.
     training_campaign_labels:
         Campaign labels that should participate in offline training.
     testing_campaign_labels:
@@ -43,6 +50,7 @@ class NotebookWorkflowConfig:
 
     config_dir: Path
     excluded_sensor_ids: tuple[str, ...]
+    excluded_leading_measurements_per_sensor: int
     training_campaign_labels: tuple[str, ...]
     testing_campaign_labels: tuple[str, ...]
 
@@ -71,7 +79,8 @@ def load_notebook_workflow_config(
     ----------
     config_dir:
         Directory that contains ``excluded_nodes.txt``,
-        ``training_campaigns.txt``, and ``testing_campaigns.txt``.
+        ``excluded_measurements.txt``, ``training_campaigns.txt``, and
+        ``testing_campaigns.txt``.
 
     Returns
     -------
@@ -98,6 +107,9 @@ def load_notebook_workflow_config(
         list_label="excluded sensor ids",
         allow_empty=True,
     )
+    excluded_leading_measurements_per_sensor = _read_excluded_measurement_count(
+        resolved_config_dir / _EXCLUDED_MEASUREMENTS_FILENAME
+    )
     training_campaign_labels = _read_configured_list(
         resolved_config_dir / _TRAINING_CAMPAIGNS_FILENAME,
         list_label="training campaign labels",
@@ -121,6 +133,9 @@ def load_notebook_workflow_config(
     return NotebookWorkflowConfig(
         config_dir=resolved_config_dir,
         excluded_sensor_ids=excluded_sensor_ids,
+        excluded_leading_measurements_per_sensor=(
+            excluded_leading_measurements_per_sensor
+        ),
         training_campaign_labels=training_campaign_labels,
         testing_campaign_labels=testing_campaign_labels,
     )
@@ -172,6 +187,7 @@ def fingerprint_notebook_workflow_config(
     resolved_config_dir = Path(config_dir)
     required_paths = (
         resolved_config_dir / _EXCLUDED_NODES_FILENAME,
+        resolved_config_dir / _EXCLUDED_MEASUREMENTS_FILENAME,
         resolved_config_dir / _TRAINING_CAMPAIGNS_FILENAME,
         resolved_config_dir / _TESTING_CAMPAIGNS_FILENAME,
     )
@@ -222,6 +238,47 @@ def _read_configured_list(
             f"{path}"
         )
     return tuple(ordered_items)
+
+
+def _read_excluded_measurement_count(path: Path) -> int:
+    """Read one global leading-measurement exclusion count from disk.
+
+    The file is intentionally constrained to at most one non-comment entry so
+    notebook users only configure one scalar policy: discard the first
+    ``n`` measurements of every retained sensor in every campaign.
+    """
+
+    if not path.exists():
+        raise FileNotFoundError(f"Missing notebook workflow config file: {path}")
+
+    configured_values: list[str] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        normalized_line = raw_line.partition("#")[0].strip()
+        if normalized_line:
+            configured_values.append(normalized_line)
+
+    if not configured_values:
+        return 0
+    if len(configured_values) > 1:
+        raise ValueError(
+            "excluded_measurements.txt must contain at most one non-comment "
+            f"integer entry, found {len(configured_values)} values in {path}"
+        )
+
+    raw_value = configured_values[0]
+    try:
+        excluded_measurement_count = int(raw_value)
+    except ValueError as error:
+        raise ValueError(
+            "excluded_measurements.txt must contain one non-negative integer, "
+            f"got {raw_value!r} in {path}"
+        ) from error
+    if excluded_measurement_count < 0:
+        raise ValueError(
+            "excluded_measurements.txt must contain a non-negative integer, "
+            f"got {excluded_measurement_count} in {path}"
+        )
+    return excluded_measurement_count
 
 
 def _slugify_token(raw_value: str) -> str:

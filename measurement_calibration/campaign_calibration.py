@@ -84,6 +84,9 @@ class PreparedCalibrationCampaign:
         Reliable sensor selected from the ranking and distribution diagnostics.
     excluded_sensor_ids:
         Sensors explicitly removed before alignment.
+    excluded_leading_measurements_by_sensor_id:
+        Leading-row exclusions applied to retained sensors before timestamp
+        alignment. Each tuple is ``(sensor_id, n_leading_measurements)``.
     alignment_pruned_sensor_ids:
         Sensors automatically pruned because the full retained roster had no
         timestamp-aligned record groups in common.
@@ -103,6 +106,7 @@ class PreparedCalibrationCampaign:
     alignment_diagnostics: CampaignAlignmentDiagnostics
     reliable_sensor_id: str
     excluded_sensor_ids: tuple[str, ...]
+    excluded_leading_measurements_by_sensor_id: tuple[tuple[str, int], ...]
     alignment_pruned_sensor_ids: tuple[str, ...]
     distribution_outlier_sensor_ids: tuple[str, ...]
     ranking_histogram_bins: int
@@ -270,6 +274,7 @@ def prepare_calibration_campaign(
     campaign_label: str,  # Campaign label under ``data/campaigns/``
     campaigns_root: Path = DEFAULT_CAMPAIGNS_DATA_DIR,
     excluded_sensor_ids: Collection[str] = (),
+    excluded_leading_measurements_per_sensor: int = 0,
     ranking_histogram_bins: int = 50,
     distribution_histogram_bins: int = 300,
     alignment_tolerance_ms: int | None = None,
@@ -282,7 +287,9 @@ def prepare_calibration_campaign(
     Responsibilities
     ----------------
     1. read and validate campaign metadata;
-    2. load raw per-sensor series and apply explicit exclusions;
+    2. load raw per-sensor series, apply explicit whole-sensor exclusions, and
+       trim configured leading rows that are known to be corrupted by startup
+       transients;
     3. align rows by timestamp, pruning only the sensors that destroy all
        shared overlap when ``allow_alignment_pruning`` is enabled;
     4. compute ranking diagnostics used for the reliable-sensor annotation;
@@ -295,6 +302,11 @@ def prepare_calibration_campaign(
         full retained roster has no shared aligned record groups. The pruned
         sensors remain visible on the returned ``PreparedCalibrationCampaign``
         so the fallback stays auditable.
+    excluded_leading_measurements_per_sensor:
+        Number of leading rows to discard from every retained sensor after
+        explicit whole-sensor exclusions and before timestamp alignment. This
+        keeps wake-up transients out of the aligned corpus while leaving the
+        numerical core unchanged.
     """
 
     repository = FileSystemCampaignSensorDataRepository(
@@ -315,10 +327,19 @@ def prepare_calibration_campaign(
             campaign_label=campaign_label,
         )
     )
+    trimmed_sensor_series_by_id, resolved_excluded_leading_measurements = (
+        _exclude_leading_measurements_from_campaign_sensor_series(
+            sensor_series_by_id=retained_sensor_series_by_id,
+            excluded_leading_measurements_per_sensor=(
+                excluded_leading_measurements_per_sensor
+            ),
+            campaign_label=campaign_label,
+        )
+    )
 
     aligned_alignment_result = align_campaign_sensor_series_with_pruning(
         campaign_label=campaign_label,
-        sensor_series_by_id=retained_sensor_series_by_id,
+        sensor_series_by_id=trimmed_sensor_series_by_id,
         alignment_tolerance_ms=alignment_tolerance_ms,
         allow_pruning=allow_alignment_pruning,
     )
@@ -358,6 +379,7 @@ def prepare_calibration_campaign(
         alignment_diagnostics=alignment_diagnostics,
         reliable_sensor_id=reliable_sensor_id,
         excluded_sensor_ids=resolved_excluded_sensor_ids,
+        excluded_leading_measurements_by_sensor_id=resolved_excluded_leading_measurements,
         alignment_pruned_sensor_ids=aligned_alignment_result.pruned_sensor_ids,
         distribution_outlier_sensor_ids=distribution_outlier_sensor_ids,
         ranking_histogram_bins=int(ranking_histogram_bins),
@@ -369,6 +391,7 @@ def prepare_calibration_corpus(
     campaign_labels: Sequence[str] | None = None,
     campaigns_root: Path = DEFAULT_CAMPAIGNS_DATA_DIR,
     excluded_sensor_ids_by_campaign: Mapping[str, Collection[str]] | None = None,
+    excluded_leading_measurements_per_sensor: int = 0,
     ranking_histogram_bins: int = 50,
     distribution_histogram_bins: int = 300,
     alignment_tolerance_ms: int | None = None,
@@ -380,6 +403,17 @@ def prepare_calibration_corpus(
 
     Parameters
     ----------
+    campaign_labels:
+        Ordered campaign labels to include. When omitted, every campaign under
+        ``campaigns_root`` is prepared.
+    campaigns_root:
+        Root directory that contains ``data/campaigns/<campaign_label>``.
+    excluded_sensor_ids_by_campaign:
+        Optional mapping ``campaign_label -> collection[sensor_id]`` for
+        explicit whole-sensor exclusions.
+    excluded_leading_measurements_per_sensor:
+        Number of leading rows to discard from every retained sensor in every
+        prepared campaign before timestamp alignment.
     allow_alignment_pruning:
         Whether each campaign may drop only the sensors that prevent any shared
         aligned record groups from existing. This is enabled by default because
@@ -409,6 +443,9 @@ def prepare_calibration_corpus(
             campaign_label=campaign_label,
             campaigns_root=campaigns_root,
             excluded_sensor_ids=excluded_sensor_ids_by_campaign.get(campaign_label, ()),
+            excluded_leading_measurements_per_sensor=(
+                excluded_leading_measurements_per_sensor
+            ),
             ranking_histogram_bins=ranking_histogram_bins,
             distribution_histogram_bins=distribution_histogram_bins,
             alignment_tolerance_ms=alignment_tolerance_ms,
@@ -637,6 +674,89 @@ def _exclude_campaign_sensor_series(
         )
 
     return retained_sensor_series_by_id, tuple(sorted(excluded_sensor_id_set))
+
+
+def _exclude_leading_measurements_from_campaign_sensor_series(
+    sensor_series_by_id: Mapping[str, SensorMeasurementSeries],
+    excluded_leading_measurements_per_sensor: int,
+    campaign_label: str,
+) -> tuple[dict[str, SensorMeasurementSeries], tuple[tuple[str, int], ...]]:
+    """Trim configured leading rows from retained campaign sensor series.
+
+    The trimming is applied before timestamp alignment so startup transients do
+    not influence either the alignment stage or the later calibration fit. The
+    operation is a pure slice on the per-sensor arrays, which keeps the domain
+    logic deterministic and easy to audit.
+    """
+
+    if excluded_leading_measurements_per_sensor < 0:
+        raise ValueError(
+            "excluded_leading_measurements_per_sensor must be non-negative for "
+            f"{campaign_label!r}"
+        )
+    if excluded_leading_measurements_per_sensor == 0:
+        return dict(sensor_series_by_id), ()
+
+    trimmed_sensor_series_by_id = dict(sensor_series_by_id)
+    resolved_exclusions: list[tuple[str, int]] = []
+    for sensor_id in sorted(sensor_series_by_id):
+        trimmed_sensor_series_by_id[sensor_id] = _drop_sensor_series_leading_rows(
+            sensor_series=sensor_series_by_id[sensor_id],
+            n_leading_rows=excluded_leading_measurements_per_sensor,
+            campaign_label=campaign_label,
+        )
+        resolved_exclusions.append(
+            (sensor_id, int(excluded_leading_measurements_per_sensor))
+        )
+
+    if len(trimmed_sensor_series_by_id) < 2:
+        raise ValueError(
+            "At least two sensors must remain after leading-measurement "
+            f"exclusions for {campaign_label!r}"
+        )
+
+    return trimmed_sensor_series_by_id, tuple(resolved_exclusions)
+
+
+def _drop_sensor_series_leading_rows(
+    sensor_series: SensorMeasurementSeries,
+    n_leading_rows: int,
+    campaign_label: str,
+) -> SensorMeasurementSeries:
+    """Return a copy of one sensor series without its leading source rows.
+
+    The slice operates in source-file row order rather than timestamp-sorted
+    order. This matches the physical assumption that startup corruption affects
+    the first recorded acquisitions of a sensor.
+    """
+
+    if n_leading_rows < 0:
+        raise ValueError("n_leading_rows must be non-negative")
+    if n_leading_rows == 0:
+        return sensor_series
+    if n_leading_rows >= sensor_series.n_records:
+        raise ValueError(
+            "excluded leading measurements must leave at least one record for "
+            f"{campaign_label!r} sensor {sensor_series.sensor_id!r}; got "
+            f"{n_leading_rows} exclusions for {sensor_series.n_records} records"
+        )
+
+    return SensorMeasurementSeries(
+        sensor_id=sensor_series.sensor_id,
+        frequency_hz=np.asarray(sensor_series.frequency_hz, dtype=np.float64),
+        observations_db=np.asarray(
+            sensor_series.observations_db[n_leading_rows:],
+            dtype=np.float64,
+        ),
+        timestamps_ms=np.asarray(
+            sensor_series.timestamps_ms[n_leading_rows:],
+            dtype=np.int64,
+        ),
+        source_row_indices=np.asarray(
+            sensor_series.source_row_indices[n_leading_rows:],
+            dtype=np.int64,
+        ),
+    )
 
 
 def _distribution_outlier_sensor_ids(

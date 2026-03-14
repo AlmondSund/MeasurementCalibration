@@ -58,6 +58,9 @@ def test_checked_in_production_artifact_calibrates_real_deployment_campaign() ->
         campaign_label=deployment_campaign_label,
         campaigns_root=repo_root / DEFAULT_CAMPAIGNS_DATA_DIR,
         excluded_sensor_ids=excluded_sensor_ids_by_campaign[deployment_campaign_label],
+        excluded_leading_measurements_per_sensor=(
+            workflow_config.excluded_leading_measurements_per_sensor
+        ),
     )
     artifact = load_two_level_calibration_artifact(
         repo_root / DEFAULT_PRODUCTION_ARTIFACT_DIR

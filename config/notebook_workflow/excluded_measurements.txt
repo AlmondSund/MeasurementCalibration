@@ -1,2 +1,3 @@
-# Global N first measurements excluded of every campaign for training the model.
-1
+# Number of leading measurements to discard from every retained sensor in every campaign.
+# Put one non-negative integer below. Use 0 to disable the exclusion.
+2
