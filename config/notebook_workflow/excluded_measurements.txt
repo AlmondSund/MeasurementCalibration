@@ -1,0 +1,2 @@
+# Global N first measurements excluded of every campaign for training the model.
+1
