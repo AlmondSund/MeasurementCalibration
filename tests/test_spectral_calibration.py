@@ -441,6 +441,45 @@ def test_same_scene_consistency_penalty_vanishes_for_identical_corrected_spectra
     assert np.allclose(gradient_floor_parameter, 0.0, atol=1.0e-12)
 
 
+def test_same_scene_consistency_penalty_avoids_backend_prod_on_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The consistency penalty should not call backend ``prod`` on a shape tuple."""
+
+    class _ProdGuardNamespace:
+        """Proxy NumPy while rejecting ``prod`` on Python shape tuples."""
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(np, name)
+
+        def prod(self, values: Any, *args: Any, **kwargs: Any) -> Any:
+            if isinstance(values, tuple):
+                raise AssertionError("backend prod received a shape tuple")
+            return np.prod(values, *args, **kwargs)
+
+    latent_power = np.asarray([[0.35, 0.55]], dtype=np.float64)
+    gain_power = np.asarray([[1.2, 0.9], [0.8, 1.4]], dtype=np.float64)
+    additive_noise_power = np.asarray([[0.02, 0.01], [0.04, 0.02]], dtype=np.float64)
+    observations_power = (
+        gain_power[:, np.newaxis, :] * latent_power[np.newaxis, :, :]
+        + additive_noise_power[:, np.newaxis, :]
+    )
+
+    monkeypatch.setattr(spectral_calibration_core, "np", _ProdGuardNamespace())
+    penalty_value, gradient_log_gain, gradient_floor_parameter = (
+        _same_scene_consistency_penalty_and_gradients(
+            observations_power=observations_power,
+            persistent_log_gain=np.log(gain_power),
+            persistent_floor_parameter=_inverse_softplus(additive_noise_power),
+            log_floor_power=1.0e-12,
+        )
+    )
+
+    assert penalty_value >= 0.0
+    assert gradient_log_gain.shape == gain_power.shape
+    assert gradient_floor_parameter.shape == gain_power.shape
+
+
 def test_persistent_gain_respects_global_reference_convention() -> None:
     """Deployment-scale gain curves should remain centered on the global reference."""
 

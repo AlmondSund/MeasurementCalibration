@@ -2921,7 +2921,9 @@ def _same_scene_consistency_penalty_and_gradients(
     consensus_power = np.mean(transformed_corrected_power, axis=0, keepdims=True)
     centered_transformed_power = transformed_corrected_power - consensus_power
 
-    normalization = float(np.prod(observations_power.shape))
+    # Keep the normalization backend-agnostic: the Kaggle GPU path swaps
+    # ``np`` for CuPy, and ``cupy.prod`` does not accept a plain Python shape tuple.
+    normalization = float(math.prod(observations_power.shape))
     objective_value = float(np.sum(centered_transformed_power**2) / normalization)
 
     transformed_gradient = (2.0 / normalization) * centered_transformed_power
