@@ -8,7 +8,11 @@ LNA_sweep_02
 LNA_sweep_03
 LNA_sweep_04
 LNA_sweep_05
-LNA16_VGA0
-LNA16_VGA16
-LNA16_VGA32
-LNA16_VGA8
+LNA_sweep_06
+VGA_sweep_01
+VGA_sweep_02
+VGA_sweep_03
+VGA_sweep_04
+VGA_sweep_05
+VGA_sweep_06
+VGA_sweep_07
