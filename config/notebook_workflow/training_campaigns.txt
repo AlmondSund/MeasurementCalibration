@@ -16,4 +16,3 @@ VGA_sweep_04
 VGA_sweep_05
 VGA_sweep_06
 VGA_sweep_07
-MeasurementCalibration
