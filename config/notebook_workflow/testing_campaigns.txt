@@ -1,3 +1,7 @@
 # Campaigns used to test the shared notebook calibration artifact.
 test-calibration
 MeasurementCalibration
+LNA16_VGA0
+LNA16_VGA8
+LNA16_VGA16
+LNA16_VGA32
