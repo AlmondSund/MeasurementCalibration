@@ -28,22 +28,22 @@ from measurement_calibration import (
 
 _REAL_DEPLOYMENT_REGRESSION_EXPECTATIONS = {
     "test-calibration": {
-        "mean_gain_power": 1.069190787498796,
-        "mean_gain_sensor_spread": 0.15165675058808825,
-        "mean_floor_power": 2.3771144232745977e-08,
-        "mean_variance_power": 2.3929261670524444,
-        "mean_calibrated_power": 0.026014931445245526,
-        "mean_calibrated_sensor_spread": 0.009673948019876123,
-        "calibrated_power_p99": 0.4169910561568298,
+        "mean_gain_power": 1.089162892663216,
+        "mean_gain_sensor_spread": 0.24715993944837267,
+        "mean_floor_power": 1.4940083572394465e-08,
+        "mean_variance_power": 5.28041511543521,
+        "mean_calibrated_power": 0.027017133077209637,
+        "mean_calibrated_sensor_spread": 0.010764650937121704,
+        "calibrated_power_p99": 0.4638112810862088,
     },
     "MeasurementCalibration": {
-        "mean_gain_power": 1.0310154754960368,
-        "mean_gain_sensor_spread": 0.2191542323899645,
-        "mean_floor_power": 2.5304899120139988e-08,
-        "mean_variance_power": 2.351468353741056,
-        "mean_calibrated_power": 0.027065611326458218,
-        "mean_calibrated_sensor_spread": 0.014087971101656872,
-        "calibrated_power_p99": 0.43994379081154994,
+        "mean_gain_power": 1.0432312174270773,
+        "mean_gain_sensor_spread": 0.26311358452047195,
+        "mean_floor_power": 1.5111586473916284e-08,
+        "mean_variance_power": 5.29826002532638,
+        "mean_calibrated_power": 0.02798163636626477,
+        "mean_calibrated_sensor_spread": 0.01610988029426935,
+        "calibrated_power_p99": 0.49215052016631367,
     },
 }
 

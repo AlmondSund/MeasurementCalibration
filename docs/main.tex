@@ -776,6 +776,114 @@ map that is actually deployed. Thus
 \eqref{eq:Joff-cons} encourages the part of the model that transfers online to
 produce mutually consistent corrected spectra on same-scene offline campaigns.
 
+\subsection{Optional extension: correlation-based same-scene shape penalty}
+
+A complementary extension regularizes the \emph{shape} of the persistent-only
+corrected spectra rather than their absolute agreement. The structural premise
+is the same as before: in each offline calibration campaign, all participating
+sensors observe the same latent spectrum, whereas only the persistent laws
+transfer to deployment. Consequently, the additional penalty should again be
+constructed from the persistent deployment-scale laws alone.
+
+Define the persistent-only corrected spectrum as in
+\eqref{eq:consistency-calibrated-spectrum} and the transformed spectrum as in
+\eqref{eq:consistency-log-spectrum}. For a fixed campaign $m$, aligned
+acquisition $k$, and sensor pair
+$s,s'\in\mathcal S_m$, define the across-frequency Pearson correlation
+\begin{equation}
+\rho_{m,k}^{s,s'}(\theta)
+=
+\frac{
+\sum_{j=1}^{J_m}
+\bigl(
+Z_{m,s,k,j}(\theta)
+-
+\bar Z_{m,s,k,\cdot}(\theta)
+\bigr)
+\bigl(
+Z_{m,s',k,j}(\theta)
+-
+\bar Z_{m,s',k,\cdot}(\theta)
+\bigr)
+}{
+\sqrt{
+\sum_{j=1}^{J_m}
+\bigl(
+Z_{m,s,k,j}(\theta)
+-
+\bar Z_{m,s,k,\cdot}(\theta)
+\bigr)^2
+}
+\sqrt{
+\sum_{j=1}^{J_m}
+\bigl(
+Z_{m,s',k,j}(\theta)
+-
+\bar Z_{m,s',k,\cdot}(\theta)
+\bigr)^2
+}
+},
+\label{eq:corr-pairwise-correlation}
+\end{equation}
+where
+\begin{equation}
+\bar Z_{m,s,k,\cdot}(\theta)
+=
+\frac{1}{J_m}
+\sum_{j=1}^{J_m}
+Z_{m,s,k,j}(\theta).
+\label{eq:corr-sensor-frequency-mean}
+\end{equation}
+
+The correlation-consistency penalty is then
+\begin{equation}
+\mathcal L_{\mathrm{corr}}(\theta)
+=
+\sum_{m=1}^{M_{\mathrm{cal}}}
+\frac{1}{K_m}
+\sum_{k=1}^{K_m}
+\frac{2}{M_m(M_m-1)}
+\sum_{\substack{s,s'\in\mathcal S_m\\ s<s'}}
+\bigl(
+1-\rho_{m,k}^{s,s'}(\theta)
+\bigr).
+\label{eq:Lcorr}
+\end{equation}
+Minimizing $\mathcal L_{\mathrm{corr}}$ is equivalent to maximizing the mean
+pairwise correlation, across sensors, of the persistent-only corrected spectra
+within each aligned same-scene acquisition. It therefore promotes
+\emph{spectral-shape agreement after calibration} on the offline corpus.
+
+One may augment the offline objective by
+\begin{equation}
+\mathcal J_{\mathrm{off}}^{\mathrm{corr}}(\theta,\Delta,S)
+=
+\mathcal J_{\mathrm{off}}(\theta,\Delta,S)
++
+\lambda_{\mathrm{corr}}
+\mathcal L_{\mathrm{corr}}(\theta),
+\qquad
+\lambda_{\mathrm{corr}}\ge 0,
+\label{eq:Joff-corr}
+\end{equation}
+subject to the same identifiability constraints as the base model. In
+practice, $\mathcal L_{\mathrm{corr}}$ may be used either on its own or
+together with $\mathcal L_{\mathrm{cons}}$, depending on whether one wishes to
+emphasize absolute agreement, shape agreement, or both.
+
+\paragraph{Interpretation.}
+Whereas $\mathcal L_{\mathrm{cons}}$ penalizes dispersion of the corrected
+spectra themselves, $\mathcal L_{\mathrm{corr}}$ ignores per-sensor level
+offsets within each aligned acquisition and instead aligns the frequency-wise
+morphology of the persistent-only corrected spectra. The term is deliberately
+constructed from the persistent laws alone because those are the only
+quantities that transfer to deployment; if the penalty were imposed primarily
+through the campaign-specific deviations, the nuisance terms could absorb
+cross-sensor disagreement without improving the deployed calibration law. This
+preserves the two-level logic of the model: same-scene structure is used only
+offline to identify persistent behavior, while deployment remains single-sensor
+and scene-agnostic.
+
 \subsection{Persistent deployment laws after offline training}
 
 Once the offline fit is complete, the deployed persistent laws are

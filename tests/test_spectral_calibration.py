@@ -21,6 +21,7 @@ from measurement_calibration.spectral_calibration import (
     _refresh_campaign_latent_and_variance,
     _resolve_effective_variance_floor_power2,
     _resolve_sensor_reference_weight,
+    _same_scene_correlation_penalty_and_gradients,
     _same_scene_consistency_penalty_and_gradients,
     _zero_gradient_dict,
     calibrate_sensor_observations,
@@ -224,6 +225,81 @@ def _mean_persistent_only_same_scene_dispersion(
         per_campaign_dispersion.append(float(np.mean(centered_transformed_power**2)))
 
     return float(np.mean(per_campaign_dispersion))
+
+
+def _mean_persistent_only_same_scene_pairwise_correlation(
+    *,
+    result: Any,
+    fixture: Any,
+    log_floor_power: float,
+) -> float:
+    """Compute the mean persistent-only same-scene pairwise correlation.
+
+    The correlation is computed across frequency, per aligned acquisition, and
+    then averaged over all sensor pairs and campaigns. This mirrors the
+    quantity regularized by the new offline correlation penalty.
+    """
+
+    per_campaign_correlation: list[float] = []
+    for campaign in fixture.corpus.campaigns:
+        transformed_corrected_power_by_sensor: list[np.ndarray] = []
+        for sensor_id, observations_power in zip(
+            campaign.sensor_ids,
+            campaign.observations_power,
+            strict=True,
+        ):
+            curves = evaluate_persistent_calibration(
+                result=result,
+                sensor_id=sensor_id,
+                configuration=campaign.configuration,
+                frequency_hz=campaign.frequency_hz,
+            )
+            persistent_only_corrected_power = (
+                np.maximum(
+                    observations_power - curves.additive_noise_power[np.newaxis, :],
+                    0.0,
+                )
+                / curves.gain_power[np.newaxis, :]
+            )
+            transformed_corrected_power_by_sensor.append(
+                np.log(persistent_only_corrected_power + log_floor_power)
+            )
+
+        transformed_corrected_power = np.stack(
+            transformed_corrected_power_by_sensor,
+            axis=0,
+        )
+        record_correlations: list[float] = []
+        for acquisition_index in range(transformed_corrected_power.shape[1]):
+            transformed_record = transformed_corrected_power[:, acquisition_index, :]
+            centered_record = transformed_record - np.mean(
+                transformed_record,
+                axis=1,
+                keepdims=True,
+            )
+            norms = np.sqrt(np.sum(centered_record**2, axis=1))
+            for sensor_index in range(centered_record.shape[0] - 1):
+                for other_sensor_index in range(
+                    sensor_index + 1,
+                    centered_record.shape[0],
+                ):
+                    left = centered_record[sensor_index]
+                    right = centered_record[other_sensor_index]
+                    if norms[sensor_index] <= 1.0e-6 and norms[other_sensor_index] <= (
+                        1.0e-6
+                    ):
+                        record_correlations.append(1.0)
+                        continue
+                    record_correlations.append(
+                        float(
+                            np.dot(left, right)
+                            / max(norms[sensor_index], 1.0e-6)
+                            / max(norms[other_sensor_index], 1.0e-6)
+                        )
+                    )
+        per_campaign_correlation.append(float(np.mean(record_correlations)))
+
+    return float(np.mean(per_campaign_correlation))
 
 
 def test_fit_two_level_calibration_tracks_campaign_parameters() -> None:
@@ -534,6 +610,136 @@ def test_same_scene_consistency_penalty_avoids_backend_prod_on_shape(
     assert gradient_floor_parameter.shape == gain_power.shape
 
 
+def test_same_scene_correlation_penalty_vanishes_for_identical_log_shapes() -> None:
+    """Shape-only correlation loss should ignore per-sensor level offsets."""
+
+    base_spectrum = np.asarray(
+        [
+            [0.35, 0.55, 0.80, 1.10],
+            [0.42, 0.60, 0.88, 1.20],
+        ],
+        dtype=np.float64,
+    )
+    corrected_power_by_sensor = np.asarray(
+        [
+            base_spectrum,
+            2.5 * base_spectrum,
+            0.4 * base_spectrum,
+        ],
+        dtype=np.float64,
+    )
+
+    penalty_value, gradient_log_gain, gradient_floor_parameter = (
+        _same_scene_correlation_penalty_and_gradients(
+            observations_power=corrected_power_by_sensor,
+            persistent_log_gain=np.zeros((3, 4), dtype=np.float64),
+            persistent_floor_parameter=_inverse_softplus(
+                np.zeros((3, 4), dtype=np.float64)
+            ),
+            log_floor_power=1.0e-12,
+        )
+    )
+
+    assert penalty_value == pytest.approx(0.0, abs=1.0e-12)
+    assert np.allclose(gradient_log_gain, 0.0, atol=1.0e-12)
+    assert np.allclose(gradient_floor_parameter, 0.0, atol=1.0e-12)
+
+
+def test_same_scene_correlation_penalty_gradients_match_finite_differences() -> None:
+    """Correlation-penalty gradients should match finite differences."""
+
+    observations_power = np.asarray(
+        [
+            [
+                [0.80, 1.10, 0.95, 1.25],
+                [0.75, 1.05, 0.90, 1.15],
+            ],
+            [
+                [0.55, 0.92, 0.78, 1.05],
+                [0.60, 0.88, 0.82, 1.00],
+            ],
+        ],
+        dtype=np.float64,
+    )
+    persistent_log_gain = np.log(
+        np.asarray(
+            [
+                [1.15, 0.95, 1.05, 1.10],
+                [0.90, 1.05, 0.98, 1.08],
+            ],
+            dtype=np.float64,
+        )
+    )
+    persistent_floor_parameter = _inverse_softplus(
+        np.asarray(
+            [
+                [0.03, 0.02, 0.01, 0.04],
+                [0.01, 0.03, 0.02, 0.02],
+            ],
+            dtype=np.float64,
+        )
+    )
+
+    penalty_value, gradient_log_gain, gradient_floor_parameter = (
+        _same_scene_correlation_penalty_and_gradients(
+            observations_power=observations_power,
+            persistent_log_gain=persistent_log_gain,
+            persistent_floor_parameter=persistent_floor_parameter,
+            log_floor_power=1.0e-12,
+        )
+    )
+    assert penalty_value >= 0.0
+
+    step_size = 1.0e-6
+    perturbed_log_gain = persistent_log_gain.copy()
+    perturbed_log_gain[0, 1] += step_size
+    positive_log_gain_objective = _same_scene_correlation_penalty_and_gradients(
+        observations_power=observations_power,
+        persistent_log_gain=perturbed_log_gain,
+        persistent_floor_parameter=persistent_floor_parameter,
+        log_floor_power=1.0e-12,
+    )[0]
+    perturbed_log_gain[0, 1] -= 2.0 * step_size
+    negative_log_gain_objective = _same_scene_correlation_penalty_and_gradients(
+        observations_power=observations_power,
+        persistent_log_gain=perturbed_log_gain,
+        persistent_floor_parameter=persistent_floor_parameter,
+        log_floor_power=1.0e-12,
+    )[0]
+    numerical_log_gain_gradient = (
+        positive_log_gain_objective - negative_log_gain_objective
+    ) / (2.0 * step_size)
+    assert gradient_log_gain[0, 1] == pytest.approx(
+        numerical_log_gain_gradient,
+        rel=5.0e-4,
+        abs=1.0e-5,
+    )
+
+    perturbed_floor_parameter = persistent_floor_parameter.copy()
+    perturbed_floor_parameter[1, 2] += step_size
+    positive_floor_objective = _same_scene_correlation_penalty_and_gradients(
+        observations_power=observations_power,
+        persistent_log_gain=persistent_log_gain,
+        persistent_floor_parameter=perturbed_floor_parameter,
+        log_floor_power=1.0e-12,
+    )[0]
+    perturbed_floor_parameter[1, 2] -= 2.0 * step_size
+    negative_floor_objective = _same_scene_correlation_penalty_and_gradients(
+        observations_power=observations_power,
+        persistent_log_gain=persistent_log_gain,
+        persistent_floor_parameter=perturbed_floor_parameter,
+        log_floor_power=1.0e-12,
+    )[0]
+    numerical_floor_gradient = (
+        positive_floor_objective - negative_floor_objective
+    ) / (2.0 * step_size)
+    assert gradient_floor_parameter[1, 2] == pytest.approx(
+        numerical_floor_gradient,
+        rel=5.0e-4,
+        abs=1.0e-5,
+    )
+
+
 def test_large_consistency_weight_reduces_same_scene_dispersion() -> None:
     """A stronger consistency weight should reduce fitted same-scene spread.
 
@@ -570,6 +776,39 @@ def test_large_consistency_weight_reduces_same_scene_dispersion() -> None:
     )
 
     assert strong_penalty_dispersion < no_penalty_dispersion
+
+
+def test_large_correlation_weight_increases_same_scene_pairwise_correlation() -> None:
+    """A stronger correlation weight should improve fitted same-scene shape agreement."""
+
+    fixture = build_synthetic_two_level_fixture()
+    no_penalty_result = fit_two_level_calibration(
+        corpus=fixture.corpus,
+        basis_config=fixture.basis_config,
+        model_config=fixture.model_config,
+        fit_config=replace(fixture.fit_config, lambda_correlation=0.0),
+    )
+    strong_penalty_result = fit_two_level_calibration(
+        corpus=fixture.corpus,
+        basis_config=fixture.basis_config,
+        model_config=fixture.model_config,
+        fit_config=replace(fixture.fit_config, lambda_correlation=500.0),
+    )
+
+    no_penalty_correlation = _mean_persistent_only_same_scene_pairwise_correlation(
+        result=no_penalty_result,
+        fixture=fixture,
+        log_floor_power=fixture.fit_config.consistency_log_floor_power,
+    )
+    strong_penalty_correlation = (
+        _mean_persistent_only_same_scene_pairwise_correlation(
+            result=strong_penalty_result,
+            fixture=fixture,
+            log_floor_power=fixture.fit_config.consistency_log_floor_power,
+        )
+    )
+
+    assert strong_penalty_correlation > no_penalty_correlation
 
 
 def test_persistent_gain_respects_global_reference_convention() -> None:

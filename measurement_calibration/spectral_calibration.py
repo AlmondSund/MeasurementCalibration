@@ -32,6 +32,7 @@ FloatArray = NDArray[np.float64]
 IndexArray = NDArray[np.int64]
 
 _EPSILON = 1.0e-12
+_CORRELATION_NORM_FLOOR = 1.0e-6
 _CONFIGURATION_FEATURE_NAMES = (
     "central_frequency_hz",
     "span_hz",
@@ -335,10 +336,19 @@ class TwoLevelFitConfig:
         tensor, whereas the Gaussian negative log-likelihood is accumulated as
         a raw sum, so practically influential values of ``lambda_consistency``
         can be much larger than ``1`` on larger corpora.
+    lambda_correlation:
+        Weight of the persistent-only same-scene correlation penalty. This
+        auxiliary term maximizes the mean pairwise Pearson correlation, across
+        frequency, of the transformed persistent-only corrected spectra within
+        each aligned same-scene acquisition. As with
+        ``lambda_consistency``, the penalty is averaged over campaigns,
+        records, and sensor pairs, so numerically relevant values can be much
+        larger than ``1`` on larger corpora.
     consistency_log_floor_power:
         Positive numerical floor [linear power] used by the logarithmic
-        consistency transform
-        ``log(\\widetilde S + consistency_log_floor_power)``.
+        same-scene transforms
+        ``log(\\widetilde S + consistency_log_floor_power)`` used by both
+        auxiliary penalties.
     weight_decay:
         Global L2 regularization on the persistent parameters ``theta``.
     gradient_clip_norm:
@@ -382,6 +392,7 @@ class TwoLevelFitConfig:
     lambda_delta_variance_shrink: float = 0.2
     lambda_reliable_sensor_anchor: float = 0.1
     lambda_consistency: float = 0.0
+    lambda_correlation: float = 0.0
     consistency_log_floor_power: float = 1.0e-12
     weight_decay: float = 1.0e-4
     gradient_clip_norm: float | None = 10.0
@@ -424,6 +435,7 @@ class TwoLevelFitConfig:
             ("lambda_delta_variance_shrink", self.lambda_delta_variance_shrink),
             ("lambda_reliable_sensor_anchor", self.lambda_reliable_sensor_anchor),
             ("lambda_consistency", self.lambda_consistency),
+            ("lambda_correlation", self.lambda_correlation),
         ):
             if value < 0.0:
                 raise ValueError(f"{name} cannot be negative")
@@ -976,7 +988,7 @@ def fit_two_level_calibration(
        least squares;
     2. optimizing the persistent global parameters and campaign-specific
        deviations by gradient descent on the full offline objective, including
-       the optional persistent-only same-scene consistency penalty.
+       the optional persistent-only same-scene auxiliary penalties.
 
     The implementation intentionally keeps the persistent law generator light:
     trainable sensor embeddings, an affine-plus-``tanh`` configuration encoder,
@@ -2726,6 +2738,22 @@ def _accumulate_campaign_objective_and_gradients(
             fit_config.lambda_consistency * consistency_grad_log_gain
         )
         grad_persistent_floor += fit_config.lambda_consistency * consistency_grad_floor
+    if fit_config.lambda_correlation > 0.0:
+        (
+            correlation_penalty,
+            correlation_grad_log_gain,
+            correlation_grad_floor,
+        ) = _same_scene_correlation_penalty_and_gradients(
+            observations_power=campaign_state.campaign.observations_power,
+            persistent_log_gain=participant_log_gain,
+            persistent_floor_parameter=participant_floor_parameter,
+            log_floor_power=fit_config.consistency_log_floor_power,
+        )
+        objective_value += fit_config.lambda_correlation * correlation_penalty
+        grad_persistent_log_gain += (
+            fit_config.lambda_correlation * correlation_grad_log_gain
+        )
+        grad_persistent_floor += fit_config.lambda_correlation * correlation_grad_floor
 
     objective_value += _accumulate_deviation_regularization(
         deviation=campaign_state.delta_log_gain,
@@ -2883,6 +2911,199 @@ def _same_scene_consistency_penalty_and_gradients(
         gradient with respect to ``persistent_floor_parameter``.
     """
 
+    (
+        persistent_only_corrected_power,
+        transformed_corrected_power,
+        persistent_gain_power,
+        _,
+    ) = _persistent_only_same_scene_transformed_power(
+        observations_power=observations_power,
+        persistent_log_gain=persistent_log_gain,
+        persistent_floor_parameter=persistent_floor_parameter,
+        log_floor_power=log_floor_power,
+    )
+    consensus_power = np.mean(transformed_corrected_power, axis=0, keepdims=True)
+    centered_transformed_power = transformed_corrected_power - consensus_power
+
+    # Keep the normalization backend-agnostic: the Kaggle GPU path swaps
+    # ``np`` for CuPy, and ``cupy.prod`` does not accept a plain Python shape tuple.
+    normalization = float(math.prod(observations_power.shape))
+    objective_value = float(np.sum(centered_transformed_power**2) / normalization)
+
+    transformed_gradient = (2.0 / normalization) * centered_transformed_power
+    gradient_log_gain, gradient_floor_parameter = (
+        _persistent_only_transformed_gradient_to_parameter_gradients(
+            transformed_gradient=transformed_gradient,
+            persistent_only_corrected_power=persistent_only_corrected_power,
+            persistent_gain_power=persistent_gain_power,
+            persistent_floor_parameter=persistent_floor_parameter,
+            log_floor_power=log_floor_power,
+        )
+    )
+
+    return (
+        objective_value,
+        gradient_log_gain,
+        gradient_floor_parameter,
+    )
+
+
+def _same_scene_correlation_penalty_and_gradients(
+    observations_power: FloatArray,
+    persistent_log_gain: FloatArray,
+    persistent_floor_parameter: FloatArray,
+    log_floor_power: float,
+) -> tuple[float, FloatArray, FloatArray]:
+    """Evaluate the persistent-only same-scene correlation penalty.
+
+    Purpose
+    -------
+    Offline campaigns are same-scene experiments, so once the persistent
+    deployment map is applied, every participating sensor should recover the
+    same spectral morphology. This auxiliary penalty therefore maximizes the
+    across-frequency Pearson correlation of the persistent-only corrected
+    spectra within each aligned acquisition while remaining blind to absolute
+    level offsets.
+
+    The penalty is intentionally built from the persistent laws only, without
+    campaign-specific deviations, so only the deployment-transferable part of
+    the model is regularized.
+
+    Parameters
+    ----------
+    observations_power:
+        Same-scene PSD tensor with shape ``(n_sensors, n_acquisitions,
+        n_frequencies)`` [linear power].
+    persistent_log_gain:
+        Persistent log-gain curves for the participating sensors with shape
+        ``(n_sensors, n_frequencies)``.
+    persistent_floor_parameter:
+        Persistent additive-floor pre-activations with the same shape as
+        ``persistent_log_gain``.
+    log_floor_power:
+        Positive numerical floor [linear power] used by the logarithmic power
+        transform ``log(\\widetilde S + log_floor_power)``.
+
+    Returns
+    -------
+    tuple[float, np.ndarray, np.ndarray]
+        Penalty value, gradient with respect to ``persistent_log_gain``, and
+        gradient with respect to ``persistent_floor_parameter``.
+    """
+
+    (
+        persistent_only_corrected_power,
+        transformed_corrected_power,
+        persistent_gain_power,
+        _,
+    ) = _persistent_only_same_scene_transformed_power(
+        observations_power=observations_power,
+        persistent_log_gain=persistent_log_gain,
+        persistent_floor_parameter=persistent_floor_parameter,
+        log_floor_power=log_floor_power,
+    )
+
+    n_sensors, n_acquisitions, n_frequencies = observations_power.shape
+    if n_sensors < 2 or n_acquisitions < 1 or n_frequencies < 2:
+        return (
+            0.0,
+            np.zeros_like(persistent_log_gain, dtype=np.float64),
+            np.zeros_like(persistent_floor_parameter, dtype=np.float64),
+        )
+
+    objective_value = 0.0
+    transformed_gradient = np.zeros_like(transformed_corrected_power, dtype=np.float64)
+    pair_weight = (2.0 / (n_sensors * (n_sensors - 1))) / n_acquisitions
+
+    # Correlation is computed independently for each aligned acquisition so
+    # the penalty matches the same-scene record structure used in diagnostics.
+    for acquisition_index in range(n_acquisitions):
+        transformed_record = transformed_corrected_power[:, acquisition_index, :]
+        centered_record = transformed_record - np.mean(
+            transformed_record,
+            axis=1,
+            keepdims=True,
+        )
+        squared_norms = np.sum(centered_record**2, axis=1)
+        norms = np.sqrt(squared_norms)
+        safe_norms = np.maximum(norms, _CORRELATION_NORM_FLOOR)
+
+        for sensor_index in range(n_sensors - 1):
+            left_centered = centered_record[sensor_index]
+            left_norm = norms[sensor_index]
+            left_safe_norm = safe_norms[sensor_index]
+            for other_sensor_index in range(sensor_index + 1, n_sensors):
+                right_centered = centered_record[other_sensor_index]
+                right_norm = norms[other_sensor_index]
+                right_safe_norm = safe_norms[other_sensor_index]
+
+                # Pearson correlation is undefined when both centered spectra
+                # are perfectly flat across frequency. Treat that degenerate
+                # case as perfectly aligned and leave the gradient at zero.
+                if (
+                    left_norm <= _CORRELATION_NORM_FLOOR
+                    and right_norm <= _CORRELATION_NORM_FLOOR
+                ):
+                    continue
+
+                pair_correlation = float(
+                    np.dot(left_centered, right_centered)
+                    / (left_safe_norm * right_safe_norm)
+                )
+                objective_value += pair_weight * (1.0 - pair_correlation)
+
+                left_gradient = right_centered / (left_safe_norm * right_safe_norm)
+                if left_norm > _CORRELATION_NORM_FLOOR:
+                    left_gradient -= (
+                        pair_correlation * left_centered / squared_norms[sensor_index]
+                    )
+
+                right_gradient = left_centered / (left_safe_norm * right_safe_norm)
+                if right_norm > _CORRELATION_NORM_FLOOR:
+                    right_gradient -= (
+                        pair_correlation
+                        * right_centered
+                        / squared_norms[other_sensor_index]
+                    )
+
+                transformed_gradient[sensor_index, acquisition_index, :] -= (
+                    pair_weight * left_gradient
+                )
+                transformed_gradient[other_sensor_index, acquisition_index, :] -= (
+                    pair_weight * right_gradient
+                )
+
+    gradient_log_gain, gradient_floor_parameter = (
+        _persistent_only_transformed_gradient_to_parameter_gradients(
+            transformed_gradient=transformed_gradient,
+            persistent_only_corrected_power=persistent_only_corrected_power,
+            persistent_gain_power=persistent_gain_power,
+            persistent_floor_parameter=persistent_floor_parameter,
+            log_floor_power=log_floor_power,
+        )
+    )
+
+    return (
+        objective_value,
+        gradient_log_gain,
+        gradient_floor_parameter,
+    )
+
+
+def _persistent_only_same_scene_transformed_power(
+    observations_power: FloatArray,
+    persistent_log_gain: FloatArray,
+    persistent_floor_parameter: FloatArray,
+    log_floor_power: float,
+) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray]:
+    """Build the persistent-only corrected spectra and their log transform.
+
+    This helper keeps the deployment-side calibration map and the offline
+    same-scene regularizers aligned: both auxiliary penalties operate on the
+    same persistent-only corrected spectra later inspected in the notebook
+    diagnostics.
+    """
+
     observations_power = np.asarray(observations_power, dtype=np.float64)
     persistent_log_gain = np.asarray(persistent_log_gain, dtype=np.float64)
     persistent_floor_parameter = np.asarray(
@@ -2911,7 +3132,7 @@ def _same_scene_consistency_penalty_and_gradients(
     persistent_additive_noise_power = _softplus(persistent_floor_parameter)
 
     # Reuse the deployment calibration map on the entire campaign tensor so
-    # the regularizer matches the quantity that is inspected after training.
+    # the auxiliary penalties match the quantity inspected after training.
     persistent_only_corrected_power = _apply_calibration_map(
         observations_power=observations_power,
         gain_power=persistent_gain_power[:, np.newaxis, :],
@@ -2921,26 +3142,34 @@ def _same_scene_consistency_penalty_and_gradients(
     transformed_corrected_power = np.log(
         persistent_only_corrected_power + log_floor_power
     )
-    consensus_power = np.mean(transformed_corrected_power, axis=0, keepdims=True)
-    centered_transformed_power = transformed_corrected_power - consensus_power
+    return (
+        persistent_only_corrected_power,
+        transformed_corrected_power,
+        persistent_gain_power,
+        persistent_additive_noise_power,
+    )
 
-    # Keep the normalization backend-agnostic: the Kaggle GPU path swaps
-    # ``np`` for CuPy, and ``cupy.prod`` does not accept a plain Python shape tuple.
-    normalization = float(math.prod(observations_power.shape))
-    objective_value = float(np.sum(centered_transformed_power**2) / normalization)
 
-    transformed_gradient = (2.0 / normalization) * centered_transformed_power
+def _persistent_only_transformed_gradient_to_parameter_gradients(
+    transformed_gradient: FloatArray,
+    persistent_only_corrected_power: FloatArray,
+    persistent_gain_power: FloatArray,
+    persistent_floor_parameter: FloatArray,
+    log_floor_power: float,
+) -> tuple[FloatArray, FloatArray]:
+    """Backpropagate a transformed-spectrum gradient to persistent laws."""
+
     corrected_power_gradient = transformed_gradient / (
         persistent_only_corrected_power + log_floor_power
     )
 
-    # The log-gain is shared across acquisitions, so the per-record gradients
-    # collapse onto the campaign frequency grid by summing over the record axis.
+    # The persistent laws live on the campaign frequency grid, not on each
+    # acquisition separately, so the record-wise gradients collapse by summing
+    # over the aligned acquisition axis.
     gradient_log_gain = np.sum(
         corrected_power_gradient * (-persistent_only_corrected_power),
         axis=1,
     )
-
     positive_support_mask = persistent_only_corrected_power > 0.0
     gradient_floor_parameter = np.sum(
         corrected_power_gradient
@@ -2953,7 +3182,6 @@ def _same_scene_consistency_penalty_and_gradients(
     )
 
     return (
-        objective_value,
         np.asarray(gradient_log_gain, dtype=np.float64),
         np.asarray(gradient_floor_parameter, dtype=np.float64),
     )
